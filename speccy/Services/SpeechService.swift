@@ -2,6 +2,7 @@ import AVFoundation
 import Combine
 import Foundation
 import CryptoKit
+import MediaPlayer
 
 /// Simple TTS service using AVSpeechSynthesizer with background audio support.
 final class SpeechService: NSObject, ObservableObject {
@@ -44,6 +45,7 @@ final class SpeechService: NSObject, ObservableObject {
         super.init()
         synthesizer.delegate = self
         configureAudioSession()
+        setupRemoteCommandCenter()
         // Load persisted engine selection
         if let saved = UserDefaults.standard.string(forKey: Self.engineDefaultsKey), let parsed = Engine(rawValue: saved) {
             engine = parsed
@@ -138,6 +140,7 @@ final class SpeechService: NSObject, ObservableObject {
                 state = .paused(progress: progress)
             }
         }
+        updateNowPlayingPlayback(isPlaying: false)
     }
 
     @MainActor
@@ -153,6 +156,7 @@ final class SpeechService: NSObject, ObservableObject {
                 state = .speaking(progress: progress)
             }
         }
+        updateNowPlayingPlayback(isPlaying: true)
     }
 
     @MainActor
@@ -178,6 +182,7 @@ final class SpeechService: NSObject, ObservableObject {
             currentChunkIndex = 0
             state = .idle
         }
+        clearNowPlaying()
     }
 
     @MainActor
@@ -192,6 +197,7 @@ final class SpeechService: NSObject, ObservableObject {
             player.play()
             state = .speaking(progress: 0)
             startProgressTimer(player: player)
+            updateNowPlayingInfo(duration: player.duration, elapsed: player.currentTime, isPlaying: true)
         } catch {
             print("Failed to play cached audio: \(error)")
             state = .idle
@@ -215,6 +221,7 @@ final class SpeechService: NSObject, ObservableObject {
             case .downloading, .idle:
                 self.state = .speaking(progress: combined)
             }
+            self.updateNowPlayingElapsed(elapsed: player.currentTime, duration: player.duration, isPlaying: player.isPlaying)
         }
         RunLoop.main.add(progressTimer!, forMode: .common)
     }
@@ -327,20 +334,98 @@ final class SpeechService: NSObject, ObservableObject {
         currentChunkIndex = index
         playLocalFile(url: currentPlaylist[index])
     }
+
+    // MARK: - Now Playing & Remote Controls
+
+    private func setupRemoteCommandCenter() {
+        let commandCenter = MPRemoteCommandCenter.shared()
+        commandCenter.playCommand.isEnabled = true
+        commandCenter.pauseCommand.isEnabled = true
+        commandCenter.togglePlayPauseCommand.isEnabled = true
+        commandCenter.nextTrackCommand.isEnabled = true
+        commandCenter.previousTrackCommand.isEnabled = true
+
+        commandCenter.playCommand.addTarget { [weak self] _ in
+            self?.resume()
+            return .success
+        }
+        commandCenter.pauseCommand.addTarget { [weak self] _ in
+            self?.pause()
+            return .success
+        }
+        commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let self else { return .noActionableNowPlayingItem }
+            switch self.state {
+            case .idle: self.speak(text: self.currentUtterance?.speechString ?? "")
+            case .speaking: self.pause()
+            case .paused: self.resume()
+            case .downloading: break
+            }
+            return .success
+        }
+        commandCenter.nextTrackCommand.addTarget { [weak self] _ in
+            guard let self else { return .noActionableNowPlayingItem }
+            self.playChunk(at: self.currentChunkIndex + 1)
+            return .success
+        }
+        commandCenter.previousTrackCommand.addTarget { [weak self] _ in
+            guard let self else { return .noActionableNowPlayingItem }
+            let prev = max(self.currentChunkIndex - 1, 0)
+            self.playChunk(at: prev)
+            return .success
+        }
+    }
+
+    private func updateNowPlayingInfo(duration: TimeInterval, elapsed: TimeInterval, isPlaying: Bool) {
+        var info: [String: Any] = [:]
+        info[MPMediaItemPropertyTitle] = "Speccy"
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
+        info[MPMediaItemPropertyPlaybackDuration] = duration
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    private var currentPlayerElapsed: TimeInterval {
+        audioPlayer?.currentTime ?? 0
+    }
+    private var currentPlayerDuration: TimeInterval {
+        audioPlayer?.duration ?? 1
+    }
+
+    private func updateNowPlayingElapsed(elapsed: TimeInterval, duration: TimeInterval, isPlaying: Bool) {
+        guard var info = MPNowPlayingInfoCenter.default().nowPlayingInfo else { return }
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
+        info[MPMediaItemPropertyPlaybackDuration] = duration
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    private func updateNowPlayingPlayback(isPlaying: Bool) {
+        guard var info = MPNowPlayingInfoCenter.default().nowPlayingInfo else { return }
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    private func clearNowPlaying() {
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    }
 }
 
 @MainActor
 extension SpeechService: AVSpeechSynthesizerDelegate {
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
         state = .speaking(progress: 0)
+        updateNowPlayingInfo(duration: 1, elapsed: 0, isPlaying: true)
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         state = .idle
+        clearNowPlaying()
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
         state = .idle
+        clearNowPlaying()
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didPause utterance: AVSpeechUtterance) {
@@ -365,6 +450,7 @@ extension SpeechService: AVSpeechSynthesizerDelegate {
         case .idle:
             break
         }
+        updateNowPlayingElapsed(elapsed: progress, duration: 1, isPlaying: true)
     }
 }
 
