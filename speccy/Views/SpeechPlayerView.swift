@@ -11,11 +11,29 @@ struct SpeechPlayerView: View {
 
     var body: some View {
         VStack(spacing: 24) {
-            ProgressView(value: progress)
-                .progressViewStyle(.linear)
+            if case .downloading = speech.state {
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+            } else {
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+            }
             Text(progressLabel)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            if !speech.logs.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(speech.logs.enumerated()), id: \.offset) { _, line in
+                            Text(line)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+                .frame(maxHeight: 120)
+            }
             Picker("Engine", selection: $speech.engine) {
                 Text("System").tag(SpeechService.Engine.system)
                 Text("OpenAI").tag(SpeechService.Engine.openAI)

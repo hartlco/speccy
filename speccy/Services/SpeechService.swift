@@ -31,7 +31,7 @@ final class SpeechService: NSObject, ObservableObject {
         config.waitsForConnectivity = true
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
-    private var currentDownloadDestination: URL?
+    private var downloadDestinations: [Int: URL] = [:]
     private var currentDownloadTask: URLSessionDownloadTask?
     private var currentPlaylist: [URL] = []
     private var currentChunkIndex: Int = 0
@@ -46,6 +46,9 @@ final class SpeechService: NSObject, ObservableObject {
         synthesizer.delegate = self
         configureAudioSession()
         setupRemoteCommandCenter()
+        NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+            self?.handleAudioSessionInterruption(note)
+        }
         // Load persisted engine selection
         if let saved = UserDefaults.standard.string(forKey: Self.engineDefaultsKey), let parsed = Engine(rawValue: saved) {
             engine = parsed
@@ -90,6 +93,7 @@ final class SpeechService: NSObject, ObservableObject {
             currentUtterance = utterance
             synthesizer.speak(utterance)
             state = .speaking(progress: 0)
+            log("System TTS started")
 
         case .openAI:
             // Split long texts into chunks and cache each
@@ -109,6 +113,7 @@ final class SpeechService: NSObject, ObservableObject {
             // Prepare downloads for missing chunks
             pendingDownloads = zip(parts, urls).filter { (_, url) in !FileManager.default.fileExists(atPath: url.path) }
             downloadedChunksCount = 0
+            log("OpenAI chunks: total=\(chunksTotalCount), toDownload=\(pendingDownloads.count)")
             currentDownloadExpectedBytes = 0
             currentDownloadWrittenBytes = 0
             progressTimer?.invalidate()
@@ -118,6 +123,7 @@ final class SpeechService: NSObject, ObservableObject {
 
             if pendingDownloads.isEmpty {
                 // All cached, start playing immediately
+                log("All chunks cached. Starting playback.")
                 playChunk(at: 0)
             } else {
                 // Download sequentially, then play
@@ -141,6 +147,7 @@ final class SpeechService: NSObject, ObservableObject {
             }
         }
         updateNowPlayingPlayback(isPlaying: false)
+        log("Paused")
     }
 
     @MainActor
@@ -157,6 +164,7 @@ final class SpeechService: NSObject, ObservableObject {
             }
         }
         updateNowPlayingPlayback(isPlaying: true)
+        log("Resumed")
     }
 
     @MainActor
@@ -180,9 +188,11 @@ final class SpeechService: NSObject, ObservableObject {
             currentPlaylist.removeAll()
             chunksTotalCount = 0
             currentChunkIndex = 0
+            downloadDestinations.removeAll()
             state = .idle
         }
         clearNowPlaying()
+        log("Stopped")
     }
 
     @MainActor
@@ -198,9 +208,11 @@ final class SpeechService: NSObject, ObservableObject {
             state = .speaking(progress: 0)
             startProgressTimer(player: player)
             updateNowPlayingInfo(duration: player.duration, elapsed: player.currentTime, isPlaying: true)
+            log("Playing chunk \(currentChunkIndex + 1)/\(max(chunksTotalCount, 1))")
         } catch {
             print("Failed to play cached audio: \(error)")
             state = .idle
+            log("Error: Failed to play audio: \(error.localizedDescription)")
         }
     }
 
@@ -262,14 +274,16 @@ final class SpeechService: NSObject, ObservableObject {
         } catch {
             print("Failed to encode payload: \(error)")
             state = .idle
+            log("Error: Failed to encode request: \(error.localizedDescription)")
             return
         }
-        currentDownloadDestination = destination
         currentDownloadExpectedBytes = 0
         currentDownloadWrittenBytes = 0
         state = .downloading(progress: 0)
         let task = urlSession.downloadTask(with: request)
         currentDownloadTask = task
+        downloadDestinations[task.taskIdentifier] = destination
+        log("Downloading chunk \(downloadedChunksCount + 1)/\(max(chunksTotalCount, 1))…")
         task.resume()
     }
 
@@ -329,10 +343,42 @@ final class SpeechService: NSObject, ObservableObject {
     private func playChunk(at index: Int) {
         guard currentPlaylist.indices.contains(index) else {
             state = .idle
+            log("Playback completed")
             return
         }
         currentChunkIndex = index
         playLocalFile(url: currentPlaylist[index])
+    }
+
+    // MARK: - Logging
+    @Published var logs: [String] = []
+    private func log(_ message: String) {
+        let entry = message
+        logs.append(entry)
+        if logs.count > 200 { logs.removeFirst(logs.count - 200) }
+    }
+
+    // MARK: - Interruption handling
+    private func handleAudioSessionInterruption(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+        switch type {
+        case .began:
+            log("Audio session interrupted (began)")
+        case .ended:
+            let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt
+            let shouldResume = optionsValue.map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) } ?? false
+            log("Audio session interruption ended. shouldResume=\(shouldResume)")
+            if shouldResume {
+                Task { @MainActor in
+                    do { try AVAudioSession.sharedInstance().setActive(true) } catch {}
+                    self.resume()
+                }
+            }
+        @unknown default:
+            break
+        }
     }
 
     // MARK: - Now Playing & Remote Controls
@@ -467,8 +513,9 @@ extension SpeechService: URLSessionDownloadDelegate, AVAudioPlayerDelegate {
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        guard let destination = currentDownloadDestination else {
-            print("No destination for downloaded file")
+        guard let destination = downloadDestinations[downloadTask.taskIdentifier] else {
+            print("No destination for downloaded file (task \(downloadTask.taskIdentifier))")
+            log("Error: Missing destination for task \(downloadTask.taskIdentifier)")
             state = .idle
             return
         }
@@ -487,8 +534,9 @@ extension SpeechService: URLSessionDownloadDelegate, AVAudioPlayerDelegate {
         } catch {
             print("Failed moving downloaded audio: \(error)")
             state = .idle
+            log("Error: Failed moving download: \(error.localizedDescription)")
         }
-        currentDownloadDestination = nil
+        downloadDestinations.removeValue(forKey: downloadTask.taskIdentifier)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
