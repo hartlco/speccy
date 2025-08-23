@@ -5,6 +5,7 @@ import CryptoKit
 import MediaPlayer
 
 /// Simple TTS service using AVSpeechSynthesizer with background audio support.
+@MainActor
 final class SpeechService: NSObject, ObservableObject {
     enum Engine: String, CaseIterable, Identifiable {
         case system
@@ -29,7 +30,8 @@ final class SpeechService: NSObject, ObservableObject {
     private lazy var urlSession: URLSession = {
         let config = URLSessionConfiguration.default
         config.waitsForConnectivity = true
-        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        // Use main operation queue for delegate callbacks to ensure main-actor updates
+        return URLSession(configuration: config, delegate: self, delegateQueue: OperationQueue.main)
     }()
     private var downloadDestinations: [Int: URL] = [:]
     private var currentDownloadTask: URLSessionDownloadTask?
