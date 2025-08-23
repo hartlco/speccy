@@ -32,6 +32,13 @@ final class SpeechService: NSObject, ObservableObject {
     }()
     private var currentDownloadDestination: URL?
     private var currentDownloadTask: URLSessionDownloadTask?
+    private var currentPlaylist: [URL] = []
+    private var currentChunkIndex: Int = 0
+    private var chunksTotalCount: Int = 0
+    private var pendingDownloads: [(text: String, destination: URL)] = []
+    private var downloadedChunksCount: Int = 0
+    private var currentDownloadExpectedBytes: Int64 = 0
+    private var currentDownloadWrittenBytes: Int64 = 0
 
     override init() {
         super.init()
@@ -83,18 +90,37 @@ final class SpeechService: NSObject, ObservableObject {
             state = .speaking(progress: 0)
 
         case .openAI:
-            // Look up from cache first, else download and cache
+            // Split long texts into chunks and cache each
             guard let config = loadOpenAIConfig() else {
                 print("Missing OPENAI_API_KEY; cannot use OpenAI engine.")
                 state = .idle
                 return
             }
-            let key = cacheKey(text: text, model: config.model, voice: config.voice, format: config.format)
-            let fileURL = ensureCacheFileURL(forKey: key, format: config.format)
-            if FileManager.default.fileExists(atPath: fileURL.path) {
-                playLocalFile(url: fileURL)
+            let parts = chunkText(text)
+            let urls: [URL] = parts.map { part in
+                let key = cacheKey(text: part, model: config.model, voice: config.voice, format: config.format)
+                return ensureCacheFileURL(forKey: key, format: config.format)
+            }
+            currentPlaylist = urls
+            chunksTotalCount = urls.count
+            currentChunkIndex = 0
+            // Prepare downloads for missing chunks
+            pendingDownloads = zip(parts, urls).filter { (_, url) in !FileManager.default.fileExists(atPath: url.path) }
+            downloadedChunksCount = 0
+            currentDownloadExpectedBytes = 0
+            currentDownloadWrittenBytes = 0
+            progressTimer?.invalidate()
+            progressTimer = nil
+            audioPlayer?.stop()
+            audioPlayer = nil
+
+            if pendingDownloads.isEmpty {
+                // All cached, start playing immediately
+                playChunk(at: 0)
             } else {
-                downloadOpenAIAudio(text: text, config: config, destination: fileURL)
+                // Download sequentially, then play
+                state = .downloading(progress: 0)
+                startNextDownload(config: config)
             }
         }
     }
@@ -146,6 +172,10 @@ final class SpeechService: NSObject, ObservableObject {
             audioPlayer = nil
             currentDownloadTask?.cancel()
             currentDownloadTask = nil
+            pendingDownloads.removeAll()
+            currentPlaylist.removeAll()
+            chunksTotalCount = 0
+            currentChunkIndex = 0
             state = .idle
         }
     }
@@ -158,6 +188,7 @@ final class SpeechService: NSObject, ObservableObject {
             audioPlayer = try AVAudioPlayer(contentsOf: url)
             guard let player = audioPlayer else { return }
             player.prepareToPlay()
+            player.delegate = self
             player.play()
             state = .speaking(progress: 0)
             startProgressTimer(player: player)
@@ -173,19 +204,16 @@ final class SpeechService: NSObject, ObservableObject {
         progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self else { return }
             guard player.duration > 0 else { return }
-            let progress = min(max(player.currentTime / player.duration, 0), 1)
+            let chunkFraction = min(max(player.currentTime / player.duration, 0), 1)
+            let total = max(self.chunksTotalCount, 1)
+            let combined = (Double(self.currentChunkIndex) + chunkFraction) / Double(total)
             switch self.state {
             case .speaking:
-                self.state = .speaking(progress: progress)
+                self.state = .speaking(progress: combined)
             case .paused:
-                self.state = .paused(progress: progress)
+                self.state = .paused(progress: combined)
             case .downloading, .idle:
-                self.state = .speaking(progress: progress)
-            }
-            if progress >= 1 {
-                self.progressTimer?.invalidate()
-                self.progressTimer = nil
-                self.state = .idle
+                self.state = .speaking(progress: combined)
             }
         }
         RunLoop.main.add(progressTimer!, forMode: .common)
@@ -230,6 +258,8 @@ final class SpeechService: NSObject, ObservableObject {
             return
         }
         currentDownloadDestination = destination
+        currentDownloadExpectedBytes = 0
+        currentDownloadWrittenBytes = 0
         state = .downloading(progress: 0)
         let task = urlSession.downloadTask(with: request)
         currentDownloadTask = task
@@ -253,6 +283,49 @@ final class SpeechService: NSObject, ObservableObject {
 
     private func ensureCacheFileURL(forKey key: String, format: String) -> URL {
         return cacheDirectory().appendingPathComponent("\(key).\(format)")
+    }
+
+    // MARK: - Chunking & sequential download
+
+    private func chunkText(_ text: String, maxChunkLength: Int = 3800) -> [String] {
+        guard text.count > maxChunkLength else { return [text] }
+        var result: [String] = []
+        var current = ""
+        let separators = CharacterSet(charactersIn: ".!?\n\t")
+        let tokens = text.split(whereSeparator: { char in
+            char.unicodeScalars.contains { separators.contains($0) }
+        }, omittingEmptySubsequences: false)
+        for token in tokens {
+            let piece = String(token)
+            if current.count + piece.count + 1 > maxChunkLength {
+                if !current.isEmpty { result.append(current) }
+                current = piece
+            } else {
+                current += piece
+            }
+        }
+        if !current.isEmpty { result.append(current) }
+        // Fallback safety: ensure no empty chunks
+        return result.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    private func startNextDownload(config: OpenAIConfig) {
+        guard !pendingDownloads.isEmpty else {
+            // All downloaded; start playback
+            playChunk(at: 0)
+            return
+        }
+        let next = pendingDownloads.removeFirst()
+        downloadOpenAIAudio(text: next.text, config: config, destination: next.destination)
+    }
+
+    private func playChunk(at index: Int) {
+        guard currentPlaylist.indices.contains(index) else {
+            state = .idle
+            return
+        }
+        currentChunkIndex = index
+        playLocalFile(url: currentPlaylist[index])
     }
 }
 
@@ -296,11 +369,15 @@ extension SpeechService: AVSpeechSynthesizerDelegate {
 }
 
 @MainActor
-extension SpeechService: URLSessionDownloadDelegate {
+extension SpeechService: URLSessionDownloadDelegate, AVAudioPlayerDelegate {
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        guard totalBytesExpectedToWrite > 0 else { return }
-        let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
-        state = .downloading(progress: progress)
+        currentDownloadExpectedBytes = totalBytesExpectedToWrite
+        currentDownloadWrittenBytes = totalBytesWritten
+        let chunksCompleted = Double(downloadedChunksCount)
+        let chunksTotal = max(Double(chunksTotalCount), 1)
+        let intra = totalBytesExpectedToWrite > 0 ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) : 0
+        let overall = min((chunksCompleted + intra) / chunksTotal, 0.999)
+        state = .downloading(progress: overall)
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
@@ -314,7 +391,13 @@ extension SpeechService: URLSessionDownloadDelegate {
                 try FileManager.default.removeItem(at: destination)
             }
             try FileManager.default.moveItem(at: location, to: destination)
-            playLocalFile(url: destination)
+            downloadedChunksCount += 1
+            // If all downloads complete, start playback; otherwise continue downloading next
+            if downloadedChunksCount >= chunksTotalCount || pendingDownloads.isEmpty {
+                playChunk(at: 0)
+            } else if let config = loadOpenAIConfig() {
+                startNextDownload(config: config)
+            }
         } catch {
             print("Failed moving downloaded audio: \(error)")
             state = .idle
@@ -325,6 +408,18 @@ extension SpeechService: URLSessionDownloadDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if let error {
             print("Download failed: \(error)")
+            state = .idle
+        }
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        // Move to next chunk if available
+        let nextIndex = currentChunkIndex + 1
+        if currentPlaylist.indices.contains(nextIndex) {
+            playChunk(at: nextIndex)
+        } else {
+            progressTimer?.invalidate()
+            progressTimer = nil
             state = .idle
         }
     }
