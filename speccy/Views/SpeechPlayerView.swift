@@ -66,6 +66,8 @@ struct SpeechPlayerView: View {
                 break
             case .speaking, .paused:
                 speech.speak(text: text, languageCode: languageCode, rate: rate)
+            case .downloading:
+                break
             }
         }
         .onChange(of: speech.engine) { _ in
@@ -74,6 +76,8 @@ struct SpeechPlayerView: View {
                 break
             case .speaking, .paused:
                 speech.speak(text: text, languageCode: languageCode, rate: rate)
+            case .downloading:
+                break
             }
         }
         .navigationTitle("Player")

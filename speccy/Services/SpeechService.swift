@@ -4,7 +4,6 @@ import Foundation
 import CryptoKit
 
 /// Simple TTS service using AVSpeechSynthesizer with background audio support.
-@MainActor
 final class SpeechService: NSObject, ObservableObject {
     enum Engine: String, CaseIterable, Identifiable {
         case system
@@ -52,11 +51,12 @@ final class SpeechService: NSObject, ObservableObject {
 
     private static let engineDefaultsKey = "SPEECH_ENGINE"
 
+    @MainActor
     func configureAudioSession() {
         #if os(iOS) || os(tvOS) || os(watchOS)
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers, .allowBluetooth, .allowAirPlay])
+            try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers, .allowBluetoothHFP, .allowAirPlay])
             try session.setActive(true)
         } catch {
             print("Failed to set up audio session: \(error)")
@@ -66,6 +66,7 @@ final class SpeechService: NSObject, ObservableObject {
         #endif
     }
 
+    @MainActor
     func speak(text: String, voiceIdentifier: String? = nil, languageCode: String? = nil, rate: Float = AVSpeechUtteranceDefaultSpeechRate) {
         stop()
         switch engine {
@@ -98,6 +99,7 @@ final class SpeechService: NSObject, ObservableObject {
         }
     }
 
+    @MainActor
     func pause() {
         switch engine {
         case .system:
@@ -112,6 +114,7 @@ final class SpeechService: NSObject, ObservableObject {
         }
     }
 
+    @MainActor
     func resume() {
         switch engine {
         case .system:
@@ -126,6 +129,7 @@ final class SpeechService: NSObject, ObservableObject {
         }
     }
 
+    @MainActor
     func stop() {
         switch engine {
         case .system:
@@ -146,6 +150,7 @@ final class SpeechService: NSObject, ObservableObject {
         }
     }
 
+    @MainActor
     private func playLocalFile(url: URL) {
         progressTimer?.invalidate()
         progressTimer = nil
@@ -161,6 +166,7 @@ final class SpeechService: NSObject, ObservableObject {
         }
     }
 
+    @MainActor
     private func startProgressTimer(player: AVAudioPlayer) {
         progressTimer?.invalidate()
         progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
@@ -172,6 +178,8 @@ final class SpeechService: NSObject, ObservableObject {
                 self.state = .speaking(progress: progress)
             case .paused:
                 self.state = .paused(progress: progress)
+            case .downloading:
+                break
             case .idle:
                 break
             }
@@ -249,6 +257,7 @@ final class SpeechService: NSObject, ObservableObject {
     }
 }
 
+@MainActor
 extension SpeechService: AVSpeechSynthesizerDelegate {
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
         state = .speaking(progress: 0)
@@ -279,12 +288,15 @@ extension SpeechService: AVSpeechSynthesizerDelegate {
             state = .speaking(progress: progress)
         case .paused:
             state = .paused(progress: progress)
+        case .downloading:
+            break
         case .idle:
             break
         }
     }
 }
 
+@MainActor
 extension SpeechService: URLSessionDownloadDelegate {
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
         guard totalBytesExpectedToWrite > 0 else { return }
