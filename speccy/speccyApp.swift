@@ -6,12 +6,14 @@
 //
 
 import SwiftUI
+import SwiftData
 
 @main
 struct speccyApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            DocumentListView()
         }
+        .modelContainer(for: SpeechDocument.self)
     }
 }
