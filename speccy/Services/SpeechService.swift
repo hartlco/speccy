@@ -292,9 +292,9 @@ final class SpeechService: NSObject, ObservableObject {
         var result: [String] = []
         var current = ""
         let separators = CharacterSet(charactersIn: ".!?\n\t")
-        let tokens = text.split(whereSeparator: { char in
+        let tokens = text.split(maxSplits: Int.max, omittingEmptySubsequences: false, whereSeparator: { char in
             char.unicodeScalars.contains { separators.contains($0) }
-        }, omittingEmptySubsequences: false)
+        })
         for token in tokens {
             let piece = String(token)
             if current.count + piece.count + 1 > maxChunkLength {
