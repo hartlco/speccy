@@ -6,6 +6,7 @@ struct DocumentListView: View {
     @Query(sort: \SpeechDocument.updatedAt, order: .reverse) private var documents: [SpeechDocument]
 
     @State private var showingNew = false
+    @State private var showingSettings = false
 
     var body: some View {
         NavigationStack {
@@ -27,6 +28,9 @@ struct DocumentListView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(action: { showingNew = true }) { Image(systemName: "plus") }
                 }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(action: { showingSettings = true }) { Image(systemName: "gearshape") }
+                }
                 ToolbarItem(placement: .automatic) {
                     NavigationLink(value: SpeechDocument(title: "Sample", markdown: sampleMD)) {
                         Image(systemName: "play.circle")
@@ -41,6 +45,10 @@ struct DocumentListView: View {
                     DocumentEditorView(document: SpeechDocument(title: "Untitled", markdown: "", languageCode: Locale.current.identifier), isNew: true)
                 }
                 .presentationDetents([.medium, .large])
+            }
+            .sheet(isPresented: $showingSettings) {
+                NavigationStack { SettingsView() }
+                    .presentationDetents([.medium, .large])
             }
         }
     }
