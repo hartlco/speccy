@@ -57,7 +57,10 @@ struct SpeechPlayerView: View {
             Spacer()
         }
         .padding()
-        .onAppear { if case .idle = speech.state { speech.speak(text: text, languageCode: languageCode, rate: rate) } }
+        .onAppear {
+            // Always attempt to play; service will use cache for OpenAI
+            speech.speak(text: text, languageCode: languageCode, rate: rate)
+        }
         .onDisappear { speech.stop() }
         .onChange(of: rate) { _ in
             guard speech.engine == .system else { return }

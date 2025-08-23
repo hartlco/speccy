@@ -159,6 +159,7 @@ final class SpeechService: NSObject, ObservableObject {
             guard let player = audioPlayer else { return }
             player.prepareToPlay()
             player.play()
+            state = .speaking(progress: 0)
             startProgressTimer(player: player)
         } catch {
             print("Failed to play cached audio: \(error)")
@@ -178,12 +179,10 @@ final class SpeechService: NSObject, ObservableObject {
                 self.state = .speaking(progress: progress)
             case .paused:
                 self.state = .paused(progress: progress)
-            case .downloading:
-                break
-            case .idle:
-                break
+            case .downloading, .idle:
+                self.state = .speaking(progress: progress)
             }
-            if progress >= 1 || !player.isPlaying {
+            if progress >= 1 {
                 self.progressTimer?.invalidate()
                 self.progressTimer = nil
                 self.state = .idle
