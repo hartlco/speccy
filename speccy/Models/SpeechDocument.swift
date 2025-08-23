@@ -7,13 +7,15 @@ final class SpeechDocument {
     var id: UUID
     var title: String
     var markdown: String
+    var languageCode: String?
     var createdAt: Date
     var updatedAt: Date
 
-    init(id: UUID = UUID(), title: String, markdown: String, createdAt: Date = .now, updatedAt: Date = .now) {
+    init(id: UUID = UUID(), title: String, markdown: String, languageCode: String? = nil, createdAt: Date = .now, updatedAt: Date = .now) {
         self.id = id
         self.title = title
         self.markdown = markdown
+        self.languageCode = languageCode
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -29,10 +31,10 @@ extension SpeechDocument {
         }
         // Fallback: very light-weight Markdown stripping
         return markdown
-            .replacingOccurrences(of: "```[\s\S]*?```", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "`([^`]+)`", with: "$1", options: .regularExpression)
-            .replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
-            .replacingOccurrences(of: "[#*_>\-]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"```[\s\S]*?```"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"`([^`]+)`"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+            .replacingOccurrences(of: #"[#*_>\-]"#, with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

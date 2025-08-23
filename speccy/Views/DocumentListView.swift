@@ -38,7 +38,7 @@ struct DocumentListView: View {
             }
             .sheet(isPresented: $showingNew) {
                 NavigationStack {
-                    DocumentEditorView(document: SpeechDocument(title: "Untitled", markdown: ""), isNew: true)
+                    DocumentEditorView(document: SpeechDocument(title: "Untitled", markdown: "", languageCode: Locale.current.identifier), isNew: true)
                 }
                 .presentationDetents([.medium, .large])
             }

@@ -5,6 +5,7 @@ struct SpeechPlayerView: View {
     @StateObject private var speech = SpeechService()
 
     let text: String
+    var languageCode: String? = nil
 
     var body: some View {
         VStack(spacing: 24) {
@@ -30,7 +31,7 @@ struct SpeechPlayerView: View {
             Spacer()
         }
         .padding()
-        .onAppear { if case .idle = speech.state { speech.speak(text: text) } }
+        .onAppear { if case .idle = speech.state { speech.speak(text: text, languageCode: languageCode) } }
         .onDisappear { speech.stop() }
         .navigationTitle("Player")
         .toolbar {

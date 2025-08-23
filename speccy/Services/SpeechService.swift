@@ -37,12 +37,11 @@ final class SpeechService: NSObject, ObservableObject {
         #endif
     }
 
-    func speak(text: String, voiceIdentifier: String? = nil, rate: Float = AVSpeechUtteranceDefaultSpeechRate) {
+    func speak(text: String, voiceIdentifier: String? = nil, languageCode: String? = nil, rate: Float = AVSpeechUtteranceDefaultSpeechRate) {
         stop()
         let utterance = AVSpeechUtterance(string: text)
-        if let voiceIdentifier {
-            utterance.voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier)
-        }
+        if let voiceIdentifier { utterance.voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier) }
+        else if let languageCode { utterance.voice = AVSpeechSynthesisVoice(language: languageCode) }
         utterance.rate = rate
         utterance.prefersAssistiveTechnologySettings = true
         utterance.postUtteranceDelay = 0.0
