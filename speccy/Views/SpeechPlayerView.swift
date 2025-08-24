@@ -3,12 +3,12 @@ import SwiftUI
 struct SpeechPlayerView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var speech = SpeechService()
+    @ObservedObject private var preferences = UserPreferences.shared
 
     let text: String
     var title: String? = nil
     var languageCode: String? = nil
     var resumeKey: String? = nil
-    @State private var rateMultiplier: Float = 1.0
     @State private var isScrubbing: Bool = false
     @State private var scrubValue: Double = 0
 
@@ -42,17 +42,17 @@ struct SpeechPlayerView: View {
                 HStack {
                     Text("Speed")
                     Spacer()
-                    Text(String(format: "%.1fx", Double(rateMultiplier)))
+                    Text(String(format: "%.1fx", Double(preferences.playbackSpeed)))
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
-                Picker("Speed", selection: $rateMultiplier) {
-                    ForEach(rateOptions, id: \.self) { r in
-                        Text(String(format: "%.1fx", Double(r))).tag(r)
+                Picker("Speed", selection: $preferences.playbackSpeed) {
+                    ForEach(preferences.availablePlaybackSpeeds, id: \.self) { rate in
+                        Text(String(format: "%.1fx", Double(rate))).tag(rate)
                     }
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: rateMultiplier) { _, newVal in
+                .onChange(of: preferences.playbackSpeed) { _, newVal in
                     speech.setPlaybackRate(newVal)
                 }
             }
@@ -81,6 +81,7 @@ struct SpeechPlayerView: View {
         .onAppear {
             // Always attempt to play; service will use cache for OpenAI
             scrubValue = progress
+            speech.setPlaybackRate(preferences.playbackSpeed)
             speech.speak(text: text, title: title, resumeKey: resumeKey, languageCode: languageCode, rate: utteranceRate)
         }
         .onDisappear { speech.stop() }
@@ -140,7 +141,6 @@ struct SpeechPlayerView: View {
         return String(sample)
     }
 
-    private var rateOptions: [Float] { [0.5, 0.7, 1.0, 1.2, 1.6, 2.0] }
     private var utteranceRate: Float {
         return 0.5 // Default speech rate
     }

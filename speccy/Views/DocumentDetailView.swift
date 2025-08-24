@@ -12,6 +12,32 @@ struct DocumentDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                // Action buttons at top
+                HStack(spacing: 12) {
+                    Button {
+                        showingPlayer = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "play.fill")
+                            Text("Play Audio")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canPlay)
+                    
+                    Button {
+                        showingEditor = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "pencil")
+                            Text("Edit")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                
                 // Document content
                 VStack(alignment: .leading, spacing: 12) {
                     Text(document.title)
@@ -74,32 +100,6 @@ struct DocumentDetailView: View {
                         // Don't show anything for completed downloads
                         EmptyView()
                     }
-                }
-                
-                // Action buttons
-                VStack(spacing: 12) {
-                    Button {
-                        showingPlayer = true
-                    } label: {
-                        HStack {
-                            Image(systemName: "play.fill")
-                            Text("Play Audio")
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!canPlay)
-                    
-                    Button {
-                        showingEditor = true
-                    } label: {
-                        HStack {
-                            Image(systemName: "pencil")
-                            Text("Edit")
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
                 }
             }
             .padding()

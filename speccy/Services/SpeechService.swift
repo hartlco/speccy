@@ -197,13 +197,17 @@ final class SpeechService: NSObject, ObservableObject {
         let saved = resumeKey.flatMap { loadProgress(forKey: $0) }
         let validSaved = (saved?.textHash == textHash) ? saved : nil
 
+        AppLogger.shared.info("Starting speech synthesis for '\(title ?? "Untitled")'", category: .speech)
+
         // Split long texts into chunks and cache each
         guard let config = loadOpenAIConfig() else {
-            print("Missing OPENAI_API_KEY; cannot use OpenAI engine.")
+            AppLogger.shared.error("Missing OPENAI_API_KEY; cannot use OpenAI engine", category: .speech)
             state = .idle
             return
         }
         let parts = chunkText(text)
+        AppLogger.shared.info("Text split into \(parts.count) chunks", category: .chunks)
+        
         let urls: [URL] = parts.map { part in
             let key = cacheKey(text: part, model: config.model, voice: config.voice, format: config.format)
             return ensureCacheFileURL(forKey: key, format: config.format)
@@ -236,13 +240,18 @@ final class SpeechService: NSObject, ObservableObject {
         audioPlayer?.stop()
         audioPlayer = nil
 
+        let cachedCount = urls.count - pendingDownloads.count
+        AppLogger.shared.info("Cache status: \(cachedCount)/\(urls.count) chunks cached", category: .cache)
+
         if pendingDownloads.isEmpty {
             // All cached, start playing immediately
             log("All chunks cached. Starting playback.")
+            AppLogger.shared.info("All chunks cached. Starting playback", category: .playback)
             playChunk(at: initialChunkIndex ?? 0)
         } else {
             // Download sequentially, then play
             state = .downloading(progress: 0)
+            AppLogger.shared.info("Starting download of \(pendingDownloads.count) missing chunks", category: .download)
             startNextDownload(config: config)
         }
     }
@@ -255,6 +264,7 @@ final class SpeechService: NSObject, ObservableObject {
         }
         updateNowPlayingPlayback(isPlaying: false)
         log("Paused")
+        AppLogger.shared.info("Playback paused", category: .playback)
     }
 
     @MainActor
@@ -265,6 +275,7 @@ final class SpeechService: NSObject, ObservableObject {
         }
         updateNowPlayingPlayback(isPlaying: true)
         log("Resumed")
+        AppLogger.shared.info("Playback resumed", category: .playback)
     }
 
     @MainActor
@@ -283,6 +294,7 @@ final class SpeechService: NSObject, ObservableObject {
         state = .idle
         clearNowPlaying()
         log("Stopped")
+        AppLogger.shared.info("Playback stopped", category: .playback)
     }
 
     @MainActor
@@ -302,10 +314,12 @@ final class SpeechService: NSObject, ObservableObject {
             startProgressTimer(player: player)
             updateNowPlayingInfo(duration: player.duration, elapsed: player.currentTime, isPlaying: true)
             log("Playing chunk \(currentChunkIndex + 1)/\(max(chunksTotalCount, 1))")
+            AppLogger.shared.info("Playing chunk \(currentChunkIndex + 1)/\(max(chunksTotalCount, 1)) (duration: \(String(format: "%.1f", player.duration))s)", category: .playback)
         } catch {
             print("Failed to play cached audio: \(error)")
             state = .idle
             log("Error: Failed to play audio: \(error.localizedDescription)")
+            AppLogger.shared.error("Failed to play chunk: \(error.localizedDescription)", category: .playback)
         }
     }
 

@@ -43,6 +43,8 @@ class DownloadManager: ObservableObject {
     func startDownload(for documentId: String, title: String, text: String) {
         let downloadId = "\(documentId)_\(Date().timeIntervalSince1970)"
         
+        AppLogger.shared.info("Starting download for '\(title)' (docId: \(documentId))", category: .download)
+        
         // Cancel any existing download for this document
         cancelDownload(for: documentId)
         
@@ -72,6 +74,7 @@ class DownloadManager: ObservableObject {
     func cancelDownload(for documentId: String) {
         // Find and cancel active downloads for this document
         if let downloadItem = downloads.first(where: { $0.documentId == documentId && $0.isActive }) {
+            AppLogger.shared.info("Cancelling download for '\(downloadItem.title)'", category: .download)
             activeDownloads[downloadItem.id]?.cancel()
             activeDownloads.removeValue(forKey: downloadItem.id)
             
@@ -122,6 +125,9 @@ class DownloadManager: ObservableObject {
     private func performDownload(downloadId: String, text: String) async {
         guard let index = downloads.firstIndex(where: { $0.id == downloadId }) else { return }
         
+        let download = downloads[index]
+        AppLogger.shared.info("Starting download execution for '\(download.title)'", category: .download)
+        
         downloads[index].state = .downloading(progress: 0.0)
         
         await withCheckedContinuation { continuation in
@@ -142,11 +148,14 @@ class DownloadManager: ObservableObject {
                             return 
                         }
                         
+                        let download = self.downloads[index]
                         switch result {
                         case .success:
                             self.downloads[index].state = .completed
+                            AppLogger.shared.info("Download completed for '\(download.title)'", category: .download)
                         case .failure(let error):
                             self.downloads[index].state = .failed(error)
+                            AppLogger.shared.error("Download failed for '\(download.title)': \(error.localizedDescription)", category: .download)
                         }
                         
                         self.activeDownloads.removeValue(forKey: downloadId)
