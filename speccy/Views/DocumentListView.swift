@@ -47,11 +47,18 @@ struct DocumentListView: View {
                 }
             }
             .navigationDestination(for: SpeechDocument.self) { doc in
-                DocumentEditorView(document: doc)
+                DocumentDetailView(document: doc)
             }
             .sheet(isPresented: $showingNew) {
                 NavigationStack {
-                    DocumentEditorView(document: SpeechDocument(title: "Untitled", markdown: ""), isNew: true)
+                    DocumentEditorView(
+                        document: SpeechDocument(title: "Untitled", markdown: ""), 
+                        isNew: true,
+                        onSave: { _ in
+                            // After creating a new document, the navigation will show it in detail view
+                            // which will automatically trigger the download
+                        }
+                    )
                 }
                 .presentationDetents([.medium, .large])
             }

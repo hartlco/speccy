@@ -68,6 +68,126 @@ final class SpeechService: NSObject, ObservableObject {
     }
 
     @MainActor
+    func preloadAudio(text: String, onProgress: @escaping (Double) -> Void, onCompletion: @escaping (Result<Void, Error>) -> Void) {
+        guard let config = loadOpenAIConfig() else {
+            onCompletion(.failure(NSError(domain: "SpeechService", code: 1, userInfo: [NSLocalizedDescriptionKey: "Missing OPENAI_API_KEY"])))
+            return
+        }
+        
+        let parts = chunkText(text)
+        let urls: [URL] = parts.map { part in
+            let key = cacheKey(text: part, model: config.model, voice: config.voice, format: config.format)
+            return ensureCacheFileURL(forKey: key, format: config.format)
+        }
+        
+        // Check if all chunks are already cached
+        let missingChunks = zip(parts, urls).filter { (_, url) in !FileManager.default.fileExists(atPath: url.path) }
+        
+        if missingChunks.isEmpty {
+            onProgress(1.0)
+            onCompletion(.success(()))
+            return
+        }
+        
+        // Start downloading missing chunks
+        downloadChunksSequentially(missingChunks: missingChunks, config: config, totalChunks: parts.count, onProgress: onProgress, onCompletion: onCompletion)
+    }
+    
+    private func downloadChunksSequentially(missingChunks: [(String, URL)], config: OpenAIConfig, totalChunks: Int, onProgress: @escaping (Double) -> Void, onCompletion: @escaping (Result<Void, Error>) -> Void) {
+        guard !missingChunks.isEmpty else {
+            onProgress(1.0)
+            onCompletion(.success(()))
+            return
+        }
+        
+        var remainingChunks = missingChunks
+        var completedChunks = totalChunks - missingChunks.count
+        
+        func downloadNext() {
+            guard !remainingChunks.isEmpty else {
+                onProgress(1.0)
+                onCompletion(.success(()))
+                return
+            }
+            
+            let (text, destination) = remainingChunks.removeFirst()
+            downloadSingleChunk(text: text, destination: destination, config: config) { result in
+                switch result {
+                case .success:
+                    completedChunks += 1
+                    let progress = Double(completedChunks) / Double(totalChunks)
+                    onProgress(progress)
+                    downloadNext()
+                case .failure(let error):
+                    onCompletion(.failure(error))
+                }
+            }
+        }
+        
+        downloadNext()
+    }
+    
+    private func downloadSingleChunk(text: String, destination: URL, config: OpenAIConfig, completion: @escaping (Result<Void, Error>) -> Void) {
+        struct Payload: Encodable { let model: String; let voice: String; let input: String; let format: String }
+        let payload = Payload(model: config.model, voice: config.voice, input: text, format: config.format)
+        let url = URL(string: "https://api.openai.com/v1/audio/speech")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+        
+        do {
+            request.httpBody = try JSONEncoder().encode(payload)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+        
+        let task = URLSession.shared.downloadTask(with: request) { location, response, error in
+            if let error = error {
+                DispatchQueue.main.async { completion(.failure(error)) }
+                return
+            }
+            
+            guard let location = location else {
+                DispatchQueue.main.async { 
+                    completion(.failure(NSError(domain: "SpeechService", code: 2, userInfo: [NSLocalizedDescriptionKey: "No download location"])))
+                }
+                return
+            }
+            
+            do {
+                let dir = destination.deletingLastPathComponent()
+                if !FileManager.default.fileExists(atPath: dir.path) {
+                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                }
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.moveItem(at: location, to: destination)
+                DispatchQueue.main.async { completion(.success(())) }
+            } catch {
+                DispatchQueue.main.async { completion(.failure(error)) }
+            }
+        }
+        
+        task.resume()
+    }
+    
+    func isAudioCached(for text: String) -> Bool {
+        guard let config = loadOpenAIConfig() else { return false }
+        
+        let parts = chunkText(text)
+        let urls: [URL] = parts.map { part in
+            let key = cacheKey(text: part, model: config.model, voice: config.voice, format: config.format)
+            return ensureCacheFileURL(forKey: key, format: config.format)
+        }
+        
+        // Check if all chunks exist
+        return urls.allSatisfy { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    @MainActor
     func speak(text: String, title: String? = nil, resumeKey: String? = nil, voiceIdentifier: String? = nil, languageCode: String? = nil, rate: Float = AVSpeechUtteranceDefaultSpeechRate) {
         stop()
         nowPlayingTitle = title

@@ -7,10 +7,10 @@ struct DocumentEditorView: View {
 
     @State var document: SpeechDocument
     var isNew: Bool = false
+    var onSave: ((SpeechDocument) -> Void)? = nil
 
     @State private var title: String = ""
     @State private var markdown: String = ""
-    @State private var showingPlayer = false
     var body: some View {
         Form {
             TextField("Title", text: $title)
@@ -39,38 +39,10 @@ struct DocumentEditorView: View {
                     .bold()
             }
             #endif
-            #if os(iOS)
-            ToolbarItemGroup(placement: .bottomBar) {
-                Spacer()
-                Button {
-                    showingPlayer = true
-                } label: {
-                    Label("Play", systemImage: "play.fill")
-                }
-                .disabled(markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            #else
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    showingPlayer = true
-                } label: {
-                    Label("Play", systemImage: "play.fill")
-                }
-                .disabled(markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            #endif
         }
         .onAppear {
             title = document.title
             markdown = document.markdown
-        }
-        .sheet(isPresented: $showingPlayer) {
-            SpeechPlayerView(
-                text: markdown,
-                title: title.isEmpty ? document.title : title,
-                languageCode: nil,
-                resumeKey: document.id.uuidString
-            )
         }
     }
 
@@ -87,6 +59,7 @@ struct DocumentEditorView: View {
         }
         do {
             try modelContext.save()
+            onSave?(document)
             dismiss()
         } catch {
             print("Failed saving: \(error)")
