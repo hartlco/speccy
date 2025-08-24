@@ -4,6 +4,8 @@ import SwiftUI
 struct DocumentDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @ObservedObject private var downloadManager = DownloadManager.shared
+    @ObservedObject private var playbackManager = PlaybackManager.shared
+    @StateObject private var speechService = SpeechService()
     
     @State var document: SpeechDocument
     @State private var showingEditor = false
@@ -15,11 +17,28 @@ struct DocumentDetailView: View {
                 // Action buttons at top
                 HStack(spacing: 12) {
                     Button {
-                        showingPlayer = true
+                        if playbackManager.isCurrentSession(documentId: document.id.uuidString) {
+                            // If this document is currently playing, show the full player
+                            showingPlayer = true
+                        } else {
+                            // Start new playback session
+                            startPlayback()
+                        }
                     } label: {
                         HStack {
-                            Image(systemName: "play.fill")
-                            Text("Play Audio")
+                            if playbackManager.isCurrentSession(documentId: document.id.uuidString) {
+                                if playbackManager.isPlaying {
+                                    Image(systemName: "waveform")
+                                        .symbolEffect(.variableColor.iterative)
+                                } else if playbackManager.isPaused {
+                                    Image(systemName: "pause.fill")
+                                } else {
+                                    Image(systemName: "play.fill")
+                                }
+                            } else {
+                                Image(systemName: "play.fill")
+                            }
+                            Text(playButtonText)
                         }
                         .frame(maxWidth: .infinity)
                     }
@@ -148,6 +167,31 @@ struct DocumentDetailView: View {
         
         // If no active download, check if audio is cached
         return downloadManager.isAudioCached(for: document.id.uuidString, text: document.plainText)
+    }
+    
+    private var playButtonText: String {
+        if playbackManager.isCurrentSession(documentId: document.id.uuidString) {
+            if playbackManager.isPlaying {
+                return "Now Playing"
+            } else if playbackManager.isPaused {
+                return "Resume"
+            } else {
+                return "Open Player"
+            }
+        } else {
+            return "Play Audio"
+        }
+    }
+    
+    private func startPlayback() {
+        playbackManager.startPlayback(
+            documentId: document.id.uuidString,
+            title: document.title,
+            text: document.plainText,
+            languageCode: nil,
+            resumeKey: document.id.uuidString,
+            speechService: speechService
+        )
     }
     
     private func checkAndStartDownload() {
