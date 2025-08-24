@@ -7,25 +7,14 @@ struct SettingsView: View {
     @State private var model: String = UserDefaults.standard.string(forKey: "OPENAI_TTS_MODEL") ?? "gpt-4o-mini-tts"
     @State private var voice: String = UserDefaults.standard.string(forKey: "OPENAI_TTS_VOICE") ?? "alloy"
     @State private var format: String = UserDefaults.standard.string(forKey: "OPENAI_TTS_FORMAT") ?? "mp3"
-    @State private var defaultEngineRaw: String = UserDefaults.standard.string(forKey: "SPEECH_ENGINE") ?? "system"
-
     var body: some View {
         Form {
-            Section(header: Text("Engine")) {
-                Picker("Default Engine", selection: $defaultEngineRaw) {
-                    Text("System").tag("system")
-                    Text("OpenAI").tag("openAI")
-                }
-                .pickerStyle(.segmented)
-                Text("This engine will be used by default in the player.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
             Section(header: Text("OpenAI"), footer: Text("API key is stored in UserDefaults on device only.")) {
                 SecureField("API Key", text: $apiKey)
+                    #if os(iOS)
                     .textInputAutocapitalization(.never)
                     .textContentType(.password)
+                    #endif
                 TextField("Model", text: $model)
                 TextField("Voice", text: $voice)
                 Picker("Format", selection: $format) {
@@ -38,12 +27,21 @@ struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .toolbar {
+            #if os(iOS)
             ToolbarItem(placement: .topBarLeading) {
                 Button("Close") { dismiss() }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Save") { save() }.bold()
             }
+            #else
+            ToolbarItem(placement: .automatic) {
+                Button("Close") { dismiss() }
+            }
+            ToolbarItem(placement: .automatic) {
+                Button("Save") { save() }.bold()
+            }
+            #endif
         }
     }
 
@@ -52,7 +50,6 @@ struct SettingsView: View {
         UserDefaults.standard.set(model.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "OPENAI_TTS_MODEL")
         UserDefaults.standard.set(voice.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "OPENAI_TTS_VOICE")
         UserDefaults.standard.set(format, forKey: "OPENAI_TTS_FORMAT")
-        UserDefaults.standard.set(defaultEngineRaw, forKey: "SPEECH_ENGINE")
         dismiss()
     }
 }

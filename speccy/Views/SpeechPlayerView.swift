@@ -1,23 +1,26 @@
 import SwiftUI
-import AVFoundation
 
 struct SpeechPlayerView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var speech = SpeechService()
 
     let text: String
+    var title: String? = nil
     var languageCode: String? = nil
-    @State private var rate: Float = AVSpeechUtteranceDefaultSpeechRate
+    var resumeKey: String? = nil
+    @State private var rateMultiplier: Float = 1.0
+    @State private var isScrubbing: Bool = false
+    @State private var scrubValue: Double = 0
 
     var body: some View {
         VStack(spacing: 24) {
-            if case .downloading = speech.state {
-                ProgressView(value: progress)
-                    .progressViewStyle(.linear)
-            } else {
-                ProgressView(value: progress)
-                    .progressViewStyle(.linear)
-            }
+            // Scrubber (seek only on release)
+            Slider(value: $scrubValue, in: 0...1, onEditingChanged: { editing in
+                isScrubbing = editing
+                if !editing {
+                    speech.seek(toFraction: scrubValue, fullText: text, languageCode: languageCode, rate: utteranceRate)
+                }
+            })
             Text(progressLabel)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -34,24 +37,24 @@ struct SpeechPlayerView: View {
                 }
                 .frame(maxHeight: 120)
             }
-            Picker("Engine", selection: $speech.engine) {
-                Text("System").tag(SpeechService.Engine.system)
-                Text("OpenAI").tag(SpeechService.Engine.openAI)
-            }
-            .pickerStyle(.segmented)
+
             VStack(spacing: 12) {
                 HStack {
                     Text("Speed")
                     Spacer()
-                    Text(String(format: "%.1fx", rateScale))
+                    Text(String(format: "%.1fx", Double(rateMultiplier)))
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
-                Slider(value: Binding(
-                    get: { Double(rate) },
-                    set: { rate = Float($0) }
-                ), in: rateRange.lowerBound...rateRange.upperBound, step: 0.05)
-                .disabled(speech.engine == .openAI)
+                Picker("Speed", selection: $rateMultiplier) {
+                    ForEach(rateOptions, id: \.self) { r in
+                        Text(String(format: "%.1fx", Double(r))).tag(r)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: rateMultiplier) { _, newVal in
+                    speech.setPlaybackRate(newVal)
+                }
             }
             .padding(.horizontal)
 
@@ -77,35 +80,23 @@ struct SpeechPlayerView: View {
         .padding()
         .onAppear {
             // Always attempt to play; service will use cache for OpenAI
-            speech.speak(text: text, languageCode: languageCode, rate: rate)
+            scrubValue = progress
+            speech.speak(text: text, title: title, resumeKey: resumeKey, languageCode: languageCode, rate: utteranceRate)
         }
         .onDisappear { speech.stop() }
-        .onChange(of: rate) { _ in
-            guard speech.engine == .system else { return }
-            switch speech.state {
-            case .idle:
-                break
-            case .speaking, .paused:
-                speech.speak(text: text, languageCode: languageCode, rate: rate)
-            case .downloading:
-                break
-            }
-        }
-        .onChange(of: speech.engine) { _ in
-            switch speech.state {
-            case .idle:
-                break
-            case .speaking, .paused:
-                speech.speak(text: text, languageCode: languageCode, rate: rate)
-            case .downloading:
-                break
-            }
-        }
+        .onChange(of: speech.state) { _, _ in if !isScrubbing { scrubValue = progress } }
+
         .navigationTitle("Player")
         .toolbar {
+            #if os(iOS)
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Done") { dismiss() }
             }
+            #else
+            ToolbarItem(placement: .automatic) {
+                Button("Done") { dismiss() }
+            }
+            #endif
         }
     }
 
@@ -129,7 +120,7 @@ struct SpeechPlayerView: View {
     private func toggle() {
         switch speech.state {
         case .idle:
-            speech.speak(text: text)
+            speech.speak(text: text, title: title, resumeKey: resumeKey, languageCode: languageCode, rate: utteranceRate)
         case .speaking:
             speech.pause()
         case .paused:
@@ -149,11 +140,9 @@ struct SpeechPlayerView: View {
         return String(sample)
     }
 
-    private var rateRange: ClosedRange<Double> { 0.3...0.8 }
-    private var rateScale: Double {
-        let base = Double(AVSpeechUtteranceDefaultSpeechRate)
-        guard base > 0 else { return 1.0 }
-        return Double(rate) / base
+    private var rateOptions: [Float] { [0.5, 0.7, 1.0, 1.2, 1.6, 2.0] }
+    private var utteranceRate: Float {
+        return 0.5 // Default speech rate
     }
 
     private var progressLabel: String {

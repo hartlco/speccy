@@ -4,14 +4,9 @@ import Foundation
 import CryptoKit
 import MediaPlayer
 
-/// Simple TTS service using AVSpeechSynthesizer with background audio support.
+/// TTS service using OpenAI speech synthesis with background audio support.
 @MainActor
 final class SpeechService: NSObject, ObservableObject {
-    enum Engine: String, CaseIterable, Identifiable {
-        case system
-        case openAI
-        var id: String { rawValue }
-    }
     enum State: Equatable {
         case idle
         case downloading(progress: Double)
@@ -20,10 +15,6 @@ final class SpeechService: NSObject, ObservableObject {
     }
 
     @Published private(set) var state: State = .idle
-    @Published private(set) var currentUtterance: AVSpeechUtterance?
-    @Published var engine: Engine = .system
-
-    private let synthesizer = AVSpeechSynthesizer()
     private var cancellables = Set<AnyCancellable>()
     private var audioPlayer: AVAudioPlayer?
     private var progressTimer: Timer?
@@ -42,28 +33,24 @@ final class SpeechService: NSObject, ObservableObject {
     private var downloadedChunksCount: Int = 0
     private var currentDownloadExpectedBytes: Int64 = 0
     private var currentDownloadWrittenBytes: Int64 = 0
+    private var nowPlayingTitle: String?
+    private var currentResumeKey: String?
+    private var currentTextHash: String?
+    private var pendingSeekTime: TimeInterval?
+    private var initialChunkIndex: Int?
+    private var chunkDurations: [TimeInterval] = []
+    private var currentPlaybackRate: Float = 1.0
 
     override init() {
         super.init()
-        synthesizer.delegate = self
         configureAudioSession()
         setupRemoteCommandCenter()
+        #if os(iOS) || os(tvOS) || os(watchOS)
         NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
             self?.handleAudioSessionInterruption(note)
         }
-        // Load persisted engine selection
-        if let saved = UserDefaults.standard.string(forKey: Self.engineDefaultsKey), let parsed = Engine(rawValue: saved) {
-            engine = parsed
-        }
-        // Persist engine changes
-        $engine
-            .sink { value in
-                UserDefaults.standard.set(value.rawValue, forKey: Self.engineDefaultsKey)
-            }
-            .store(in: &cancellables)
+        #endif
     }
-
-    private static let engineDefaultsKey = "SPEECH_ENGINE"
 
     @MainActor
     func configureAudioSession() {
@@ -81,72 +68,70 @@ final class SpeechService: NSObject, ObservableObject {
     }
 
     @MainActor
-    func speak(text: String, voiceIdentifier: String? = nil, languageCode: String? = nil, rate: Float = AVSpeechUtteranceDefaultSpeechRate) {
+    func speak(text: String, title: String? = nil, resumeKey: String? = nil, voiceIdentifier: String? = nil, languageCode: String? = nil, rate: Float = AVSpeechUtteranceDefaultSpeechRate) {
         stop()
-        switch engine {
-        case .system:
-            let utterance = AVSpeechUtterance(string: text)
-            if let voiceIdentifier { utterance.voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier) }
-            else if let languageCode { utterance.voice = AVSpeechSynthesisVoice(language: languageCode) }
-            utterance.rate = rate
-            utterance.prefersAssistiveTechnologySettings = true
-            utterance.postUtteranceDelay = 0.0
-            utterance.preUtteranceDelay = 0.0
-            currentUtterance = utterance
-            synthesizer.speak(utterance)
-            state = .speaking(progress: 0)
-            log("System TTS started")
+        nowPlayingTitle = title
+        currentResumeKey = resumeKey
+        let textHash = sha256(text)
+        currentTextHash = textHash
+        let saved = resumeKey.flatMap { loadProgress(forKey: $0) }
+        let validSaved = (saved?.textHash == textHash) ? saved : nil
 
-        case .openAI:
-            // Split long texts into chunks and cache each
-            guard let config = loadOpenAIConfig() else {
-                print("Missing OPENAI_API_KEY; cannot use OpenAI engine.")
-                state = .idle
-                return
-            }
-            let parts = chunkText(text)
-            let urls: [URL] = parts.map { part in
-                let key = cacheKey(text: part, model: config.model, voice: config.voice, format: config.format)
-                return ensureCacheFileURL(forKey: key, format: config.format)
-            }
-            currentPlaylist = urls
-            chunksTotalCount = urls.count
+        // Split long texts into chunks and cache each
+        guard let config = loadOpenAIConfig() else {
+            print("Missing OPENAI_API_KEY; cannot use OpenAI engine.")
+            state = .idle
+            return
+        }
+        let parts = chunkText(text)
+        let urls: [URL] = parts.map { part in
+            let key = cacheKey(text: part, model: config.model, voice: config.voice, format: config.format)
+            return ensureCacheFileURL(forKey: key, format: config.format)
+        }
+        currentPlaylist = urls
+        chunksTotalCount = urls.count
+        if let openAIProgress = validSaved?.openAI, urls.indices.contains(openAIProgress.chunkIndex) {
+            initialChunkIndex = openAIProgress.chunkIndex
+            pendingSeekTime = openAIProgress.elapsed
+            currentChunkIndex = openAIProgress.chunkIndex
+        } else {
+            initialChunkIndex = 0
             currentChunkIndex = 0
-            // Prepare downloads for missing chunks
-            pendingDownloads = zip(parts, urls).filter { (_, url) in !FileManager.default.fileExists(atPath: url.path) }
-            downloadedChunksCount = 0
-            log("OpenAI chunks: total=\(chunksTotalCount), toDownload=\(pendingDownloads.count)")
-            currentDownloadExpectedBytes = 0
-            currentDownloadWrittenBytes = 0
-            progressTimer?.invalidate()
-            progressTimer = nil
-            audioPlayer?.stop()
-            audioPlayer = nil
+            pendingSeekTime = nil
+        }
+        // Precompute durations for local files if present
+        if pendingDownloads.isEmpty {
+            computeChunkDurations()
+        } else {
+            chunkDurations = []
+        }
+        // Prepare downloads for missing chunks
+        pendingDownloads = zip(parts, urls).filter { (_, url) in !FileManager.default.fileExists(atPath: url.path) }
+        downloadedChunksCount = 0
+        log("OpenAI chunks: total=\(chunksTotalCount), toDownload=\(pendingDownloads.count)")
+        currentDownloadExpectedBytes = 0
+        currentDownloadWrittenBytes = 0
+        progressTimer?.invalidate()
+        progressTimer = nil
+        audioPlayer?.stop()
+        audioPlayer = nil
 
-            if pendingDownloads.isEmpty {
-                // All cached, start playing immediately
-                log("All chunks cached. Starting playback.")
-                playChunk(at: 0)
-            } else {
-                // Download sequentially, then play
-                state = .downloading(progress: 0)
-                startNextDownload(config: config)
-            }
+        if pendingDownloads.isEmpty {
+            // All cached, start playing immediately
+            log("All chunks cached. Starting playback.")
+            playChunk(at: initialChunkIndex ?? 0)
+        } else {
+            // Download sequentially, then play
+            state = .downloading(progress: 0)
+            startNextDownload(config: config)
         }
     }
 
     @MainActor
     func pause() {
-        switch engine {
-        case .system:
-            if synthesizer.isSpeaking {
-                synthesizer.pauseSpeaking(at: .immediate)
-            }
-        case .openAI:
-            audioPlayer?.pause()
-            if case let .speaking(progress) = state {
-                state = .paused(progress: progress)
-            }
+        audioPlayer?.pause()
+        if case let .speaking(progress) = state {
+            state = .paused(progress: progress)
         }
         updateNowPlayingPlayback(isPlaying: false)
         log("Paused")
@@ -154,16 +139,9 @@ final class SpeechService: NSObject, ObservableObject {
 
     @MainActor
     func resume() {
-        switch engine {
-        case .system:
-            if synthesizer.isPaused {
-                synthesizer.continueSpeaking()
-            }
-        case .openAI:
-            audioPlayer?.play()
-            if case let .paused(progress) = state {
-                state = .speaking(progress: progress)
-            }
+        audioPlayer?.play()
+        if case let .paused(progress) = state {
+            state = .speaking(progress: progress)
         }
         updateNowPlayingPlayback(isPlaying: true)
         log("Resumed")
@@ -171,28 +149,18 @@ final class SpeechService: NSObject, ObservableObject {
 
     @MainActor
     func stop() {
-        switch engine {
-        case .system:
-            if synthesizer.isSpeaking || synthesizer.isPaused {
-                synthesizer.stopSpeaking(at: .immediate)
-            }
-            currentUtterance = nil
-            state = .idle
-
-        case .openAI:
-            progressTimer?.invalidate()
-            progressTimer = nil
-            audioPlayer?.stop()
-            audioPlayer = nil
-            currentDownloadTask?.cancel()
-            currentDownloadTask = nil
-            pendingDownloads.removeAll()
-            currentPlaylist.removeAll()
-            chunksTotalCount = 0
-            currentChunkIndex = 0
-            downloadDestinations.removeAll()
-            state = .idle
-        }
+        progressTimer?.invalidate()
+        progressTimer = nil
+        audioPlayer?.stop()
+        audioPlayer = nil
+        currentDownloadTask?.cancel()
+        currentDownloadTask = nil
+        pendingDownloads.removeAll()
+        currentPlaylist.removeAll()
+        chunksTotalCount = 0
+        currentChunkIndex = 0
+        downloadDestinations.removeAll()
+        state = .idle
         clearNowPlaying()
         log("Stopped")
     }
@@ -206,6 +174,9 @@ final class SpeechService: NSObject, ObservableObject {
             guard let player = audioPlayer else { return }
             player.prepareToPlay()
             player.delegate = self
+            player.enableRate = true
+            player.rate = max(0.5, min(currentPlaybackRate, 2.0))
+            if let seek = pendingSeekTime { player.currentTime = seek; pendingSeekTime = nil }
             player.play()
             state = .speaking(progress: 0)
             startProgressTimer(player: player)
@@ -236,6 +207,7 @@ final class SpeechService: NSObject, ObservableObject {
                 self.state = .speaking(progress: combined)
             }
             self.updateNowPlayingElapsed(elapsed: player.currentTime, duration: player.duration, isPlaying: player.isPlaying)
+            self.persistOpenAIProgress(elapsed: player.currentTime)
         }
         RunLoop.main.add(progressTimer!, forMode: .common)
     }
@@ -335,7 +307,7 @@ final class SpeechService: NSObject, ObservableObject {
     private func startNextDownload(config: OpenAIConfig) {
         guard !pendingDownloads.isEmpty else {
             // All downloaded; start playback
-            playChunk(at: 0)
+            playChunk(at: initialChunkIndex ?? 0)
             return
         }
         let next = pendingDownloads.removeFirst()
@@ -361,6 +333,7 @@ final class SpeechService: NSObject, ObservableObject {
     }
 
     // MARK: - Interruption handling
+    #if os(iOS) || os(tvOS) || os(watchOS)
     private func handleAudioSessionInterruption(_ notification: Notification) {
         guard let userInfo = notification.userInfo,
               let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -382,6 +355,7 @@ final class SpeechService: NSObject, ObservableObject {
             break
         }
     }
+    #endif
 
     // MARK: - Now Playing & Remote Controls
 
@@ -404,7 +378,7 @@ final class SpeechService: NSObject, ObservableObject {
         commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
             guard let self else { return .noActionableNowPlayingItem }
             switch self.state {
-            case .idle: self.speak(text: self.currentUtterance?.speechString ?? "")
+            case .idle: break // No way to resume without full text context
             case .speaking: self.pause()
             case .paused: self.resume()
             case .downloading: break
@@ -426,7 +400,7 @@ final class SpeechService: NSObject, ObservableObject {
 
     private func updateNowPlayingInfo(duration: TimeInterval, elapsed: TimeInterval, isPlaying: Bool) {
         var info: [String: Any] = [:]
-        info[MPMediaItemPropertyTitle] = "Speccy"
+        info[MPMediaItemPropertyTitle] = nowPlayingTitle ?? "Speccy"
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
         info[MPMediaItemPropertyPlaybackDuration] = duration
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
@@ -457,48 +431,87 @@ final class SpeechService: NSObject, ObservableObject {
     private func clearNowPlaying() {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
-}
 
-@MainActor
-extension SpeechService: AVSpeechSynthesizerDelegate {
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        state = .speaking(progress: 0)
-        updateNowPlayingInfo(duration: 1, elapsed: 0, isPlaying: true)
-    }
-
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        state = .idle
-        clearNowPlaying()
-    }
-
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        state = .idle
-        clearNowPlaying()
-    }
-
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didPause utterance: AVSpeechUtterance) {
-        if case let .speaking(progress) = state { state = .paused(progress: progress) }
-    }
-
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didContinue utterance: AVSpeechUtterance) {
-        if case let .paused(progress) = state { state = .speaking(progress: progress) }
-    }
-
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, willSpeakRangeOfSpeechString characterRange: NSRange, utterance: AVSpeechUtterance) {
-        let total = utterance.speechString.count
-        guard total > 0 else { return }
-        let progress = Double(characterRange.location + characterRange.length) / Double(total)
-        switch state {
-        case .speaking:
-            state = .speaking(progress: progress)
-        case .paused:
-            state = .paused(progress: progress)
-        case .downloading:
-            break
-        case .idle:
-            break
+    // MARK: - Public controls
+    func setPlaybackRate(_ rate: Float) {
+        currentPlaybackRate = rate
+        if let player = audioPlayer {
+            player.enableRate = true
+            player.rate = max(0.5, min(rate, 2.0))
         }
-        updateNowPlayingElapsed(elapsed: progress, duration: 1, isPlaying: true)
+    }
+
+    func seek(toFraction fraction: Double, fullText: String, languageCode: String?, rate: Float) {
+        let clamped = max(0.0, min(1.0, fraction))
+        
+        // If we have per-chunk durations, map precisely
+        if chunkDurations.count == currentPlaylist.count, chunkDurations.reduce(0,+) > 0 {
+            let total = chunkDurations.reduce(0,+)
+            var time = clamped * total
+            var chunk = 0
+            for (i, d) in chunkDurations.enumerated() {
+                if time <= d { chunk = i; break }
+                time -= d
+                chunk = i
+            }
+            currentChunkIndex = chunk
+            pendingSeekTime = max(0, min(time, chunkDurations[chunk]))
+            playChunk(at: chunk)
+        } else {
+            // Fallback: assume equal chunk durations
+            let total = max(1, chunksTotalCount)
+            let position = clamped * Double(total)
+            let chunk = min(total - 1, max(0, Int(floor(position))))
+            currentChunkIndex = chunk
+            pendingSeekTime = nil
+            playChunk(at: chunk)
+        }
+    }
+
+    // MARK: - Utilities
+    private func computeChunkDurations() {
+        chunkDurations = currentPlaylist.map { url in
+            do {
+                let player = try AVAudioPlayer(contentsOf: url)
+                let seconds = player.duration
+                return seconds.isFinite && seconds > 0 ? seconds : 0
+            } catch {
+                return 0
+            }
+        }
+    }
+
+    // MARK: - Progress persistence
+    private struct ProgressRecord: Codable {
+        struct OpenAI: Codable { let chunkIndex: Int; let elapsed: TimeInterval }
+        let textHash: String
+        let openAI: OpenAI?
+    }
+
+    private func sha256(_ text: String) -> String {
+        let digest = SHA256.hash(data: Data(text.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func loadProgress(forKey key: String) -> ProgressRecord? {
+        guard let data = UserDefaults.standard.data(forKey: "progress_\(key)") else { return nil }
+        return try? JSONDecoder().decode(ProgressRecord.self, from: data)
+    }
+
+    private func saveProgress(_ record: ProgressRecord, forKey key: String) {
+        if let data = try? JSONEncoder().encode(record) {
+            UserDefaults.standard.set(data, forKey: "progress_\(key)")
+        }
+    }
+
+    private func clearProgress(forKey key: String) {
+        UserDefaults.standard.removeObject(forKey: "progress_\(key)")
+    }
+
+    private func persistOpenAIProgress(elapsed: TimeInterval) {
+        guard let key = currentResumeKey, let textHash = currentTextHash else { return }
+        let record = ProgressRecord(textHash: textHash, openAI: .init(chunkIndex: currentChunkIndex, elapsed: elapsed))
+        saveProgress(record, forKey: key)
     }
 }
 
@@ -522,6 +535,11 @@ extension SpeechService: URLSessionDownloadDelegate, AVAudioPlayerDelegate {
             return
         }
         do {
+            // Ensure directory exists
+            let dir = destination.deletingLastPathComponent()
+            if !FileManager.default.fileExists(atPath: dir.path) {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            }
             if FileManager.default.fileExists(atPath: destination.path) {
                 try FileManager.default.removeItem(at: destination)
             }
@@ -529,7 +547,8 @@ extension SpeechService: URLSessionDownloadDelegate, AVAudioPlayerDelegate {
             downloadedChunksCount += 1
             // If all downloads complete, start playback; otherwise continue downloading next
             if downloadedChunksCount >= chunksTotalCount || pendingDownloads.isEmpty {
-                playChunk(at: 0)
+                if chunkDurations.isEmpty { computeChunkDurations() }
+                playChunk(at: initialChunkIndex ?? 0)
             } else if let config = loadOpenAIConfig() {
                 startNextDownload(config: config)
             }
@@ -557,6 +576,7 @@ extension SpeechService: URLSessionDownloadDelegate, AVAudioPlayerDelegate {
             progressTimer?.invalidate()
             progressTimer = nil
             state = .idle
+            if let key = currentResumeKey { clearProgress(forKey: key) }
         }
     }
 }

@@ -1,6 +1,5 @@
 import SwiftData
 import SwiftUI
-import AVFoundation
 
 struct DocumentEditorView: View {
     @Environment(\.dismiss) private var dismiss
@@ -12,22 +11,18 @@ struct DocumentEditorView: View {
     @State private var title: String = ""
     @State private var markdown: String = ""
     @State private var showingPlayer = false
-    @State private var selectedLanguageCode: String = Locale.current.identifier
-
     var body: some View {
         Form {
             TextField("Title", text: $title)
+                #if os(iOS)
                 .textInputAutocapitalization(.sentences)
+                #endif
             TextEditor(text: $markdown)
                 .frame(minHeight: 240)
-            Picker("Language", selection: $selectedLanguageCode) {
-                ForEach(availableLanguageCodes, id: \.self) { code in
-                    Text(localeDisplayName(for: code)).tag(code)
-                }
-            }
         }
         .navigationTitle(document.title.isEmpty ? "New Document" : document.title)
         .toolbar {
+            #if os(iOS)
             ToolbarItem(placement: .topBarLeading) {
                 Button("Cancel") { cancel() }
             }
@@ -35,6 +30,16 @@ struct DocumentEditorView: View {
                 Button("Save") { save() }
                     .bold()
             }
+            #else
+            ToolbarItem(placement: .automatic) {
+                Button("Cancel") { cancel() }
+            }
+            ToolbarItem(placement: .automatic) {
+                Button("Save") { save() }
+                    .bold()
+            }
+            #endif
+            #if os(iOS)
             ToolbarItemGroup(placement: .bottomBar) {
                 Spacer()
                 Button {
@@ -44,14 +49,28 @@ struct DocumentEditorView: View {
                 }
                 .disabled(markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
+            #else
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    showingPlayer = true
+                } label: {
+                    Label("Play", systemImage: "play.fill")
+                }
+                .disabled(markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            #endif
         }
         .onAppear {
             title = document.title
             markdown = document.markdown
-            if let code = document.languageCode { selectedLanguageCode = code }
         }
         .sheet(isPresented: $showingPlayer) {
-            SpeechPlayerView(text: markdown, languageCode: selectedLanguageCode)
+            SpeechPlayerView(
+                text: markdown,
+                title: title.isEmpty ? document.title : title,
+                languageCode: nil,
+                resumeKey: document.id.uuidString
+            )
         }
     }
 
@@ -62,7 +81,6 @@ struct DocumentEditorView: View {
     private func save() {
         document.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         document.markdown = markdown
-        document.languageCode = selectedLanguageCode
         document.updatedAt = .now
         if isNew {
             modelContext.insert(document)
@@ -74,18 +92,4 @@ struct DocumentEditorView: View {
             print("Failed saving: \(error)")
         }
     }
-}
-
-private let availableLanguageCodes: [String] = {
-    // Build from available voices; fall back to common locales
-    let codes = AVSpeechSynthesisVoice.speechVoices().map { $0.language }
-    let unique = Array(Set(codes)).sorted()
-    if unique.isEmpty { return ["en-US", "en-GB", "de-DE", "fr-FR", "es-ES", "it-IT"] }
-    return unique
-}()
-
-private func localeDisplayName(for code: String) -> String {
-    let locale = Locale(identifier: code)
-    let language = locale.localizedString(forIdentifier: code) ?? code
-    return language
 }

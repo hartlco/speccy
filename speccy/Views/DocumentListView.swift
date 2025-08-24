@@ -25,12 +25,21 @@ struct DocumentListView: View {
             }
             .navigationTitle("Documents")
             .toolbar {
+                #if os(iOS)
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(action: { showingNew = true }) { Image(systemName: "plus") }
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Button(action: { showingSettings = true }) { Image(systemName: "gearshape") }
                 }
+                #else
+                ToolbarItem(placement: .automatic) {
+                    Button(action: { showingNew = true }) { Image(systemName: "plus") }
+                }
+                ToolbarItem(placement: .automatic) {
+                    Button(action: { showingSettings = true }) { Image(systemName: "gearshape") }
+                }
+                #endif
                 ToolbarItem(placement: .automatic) {
                     NavigationLink(value: SpeechDocument(title: "Sample", markdown: sampleMD)) {
                         Image(systemName: "play.circle")
@@ -42,7 +51,7 @@ struct DocumentListView: View {
             }
             .sheet(isPresented: $showingNew) {
                 NavigationStack {
-                    DocumentEditorView(document: SpeechDocument(title: "Untitled", markdown: "", languageCode: Locale.current.identifier), isNew: true)
+                    DocumentEditorView(document: SpeechDocument(title: "Untitled", markdown: ""), isNew: true)
                 }
                 .presentationDetents([.medium, .large])
             }
