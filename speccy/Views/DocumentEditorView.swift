@@ -4,6 +4,7 @@ import SwiftUI
 struct DocumentEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var downloadManager = DownloadManager.shared
 
     @State var document: SpeechDocument
     var isNew: Bool = false
@@ -11,6 +12,7 @@ struct DocumentEditorView: View {
 
     @State private var title: String = ""
     @State private var markdown: String = ""
+    @State private var originalContent: String = ""
     var body: some View {
         Form {
             TextField("Title", text: $title)
@@ -43,6 +45,7 @@ struct DocumentEditorView: View {
         .onAppear {
             title = document.title
             markdown = document.markdown
+            originalContent = document.plainText
         }
     }
 
@@ -59,6 +62,17 @@ struct DocumentEditorView: View {
         }
         do {
             try modelContext.save()
+            
+            // Check if content changed and start download if needed
+            let newContent = document.plainText
+            if newContent != originalContent && !newContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                downloadManager.startDownload(
+                    for: document.id.uuidString,
+                    title: document.title.isEmpty ? "Untitled" : document.title,
+                    text: newContent
+                )
+            }
+            
             onSave?(document)
             dismiss()
         } catch {

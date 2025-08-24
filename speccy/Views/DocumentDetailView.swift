@@ -3,19 +3,11 @@ import SwiftUI
 
 struct DocumentDetailView: View {
     @Environment(\.modelContext) private var modelContext
-    @StateObject private var speechService = SpeechService()
+    @ObservedObject private var downloadManager = DownloadManager.shared
     
     @State var document: SpeechDocument
     @State private var showingEditor = false
     @State private var showingPlayer = false
-    @State private var downloadState: DownloadState = .notStarted
-    
-    enum DownloadState {
-        case notStarted
-        case downloading(progress: Double)
-        case completed
-        case failed(Error)
-    }
     
     var body: some View {
         ScrollView {
@@ -43,48 +35,45 @@ struct DocumentDetailView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 
                 // Download status
-                if case .downloading(let progress) = downloadState {
-                    VStack(spacing: 8) {
-                        HStack {
-                            Image(systemName: "arrow.down.circle")
-                                .foregroundStyle(.blue)
-                            Text("Downloading audio...")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Text("\(Int(progress * 100))%")
-                                .font(.caption)
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                        }
-                        ProgressView(value: progress)
-                            .progressViewStyle(.linear)
+                if let downloadState = currentDownloadState {
+                    switch downloadState {
+                    case .pending:
+                        downloadStatusView(
+                            icon: "clock",
+                            color: .orange,
+                            title: "Queued for download",
+                            subtitle: "Waiting to start...",
+                            showCancel: true
+                        )
+                    case .downloading(let progress):
+                        downloadStatusView(
+                            icon: "arrow.down.circle",
+                            color: .blue,
+                            title: "Downloading audio...",
+                            subtitle: "\(Int(progress * 100))%",
+                            progress: progress,
+                            showCancel: true
+                        )
+                    case .failed(let error):
+                        downloadStatusView(
+                            icon: "exclamationmark.triangle",
+                            color: .red,
+                            title: "Download failed",
+                            subtitle: error.localizedDescription,
+                            showRetry: true
+                        )
+                    case .cancelled:
+                        downloadStatusView(
+                            icon: "xmark.circle",
+                            color: .secondary,
+                            title: "Download cancelled",
+                            subtitle: "Tap retry to download again",
+                            showRetry: true
+                        )
+                    case .completed:
+                        // Don't show anything for completed downloads
+                        EmptyView()
                     }
-                    .padding()
-                    .background(Color.primary.colorInvert().opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                } else if case .failed(let error) = downloadState {
-                    HStack {
-                        Image(systemName: "exclamationmark.triangle")
-                            .foregroundStyle(.red)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Download failed")
-                                .font(.subheadline)
-                                .fontWeight(.medium)
-                            Text(error.localizedDescription)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("Retry") {
-                            startDownload()
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-                    .padding()
-                    .background(Color.primary.colorInvert().opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
                 
                 // Action buttons
@@ -141,56 +130,103 @@ struct DocumentDetailView: View {
         }
     }
     
+    private var currentDownloadState: DownloadManager.DownloadState? {
+        downloadManager.getDownloadState(for: document.id.uuidString)
+    }
+    
     private var canPlay: Bool {
-        switch downloadState {
-        case .completed:
-            return !document.markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        case .notStarted, .downloading, .failed:
+        guard !document.markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return false
         }
+        
+        if let downloadState = currentDownloadState {
+            if case .completed = downloadState {
+                return true
+            }
+            return false
+        }
+        
+        // If no active download, check if audio is cached
+        return downloadManager.isAudioCached(for: document.id.uuidString, text: document.plainText)
     }
     
     private func checkAndStartDownload() {
-        // Check if audio is already cached
-        if isAudioCached() {
-            downloadState = .completed
-        } else {
-            startDownload()
+        guard !document.markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return // Empty documents don't need audio
         }
+        
+        // Check if audio is already cached or downloading
+        if downloadManager.isAudioCached(for: document.id.uuidString, text: document.plainText) {
+            return // Already have audio
+        }
+        
+        if currentDownloadState != nil {
+            return // Already downloading or queued
+        }
+        
+        // Start download
+        startDownload()
     }
     
     private func startDownload() {
-        guard !document.markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            downloadState = .completed
-            return
-        }
-        
-        downloadState = .downloading(progress: 0)
-        
-        // Start a silent download by calling speech service
-        speechService.preloadAudio(
-            text: document.plainText,
-            onProgress: { progress in
-                downloadState = .downloading(progress: progress)
-            },
-            onCompletion: { result in
-                switch result {
-                case .success:
-                    downloadState = .completed
-                case .failure(let error):
-                    downloadState = .failed(error)
-                }
-            }
+        downloadManager.startDownload(
+            for: document.id.uuidString,
+            title: document.title.isEmpty ? "Untitled" : document.title,
+            text: document.plainText
         )
     }
     
-    private func isAudioCached() -> Bool {
-        guard !document.markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return true // Empty documents don't need audio
+    @ViewBuilder
+    private func downloadStatusView(
+        icon: String,
+        color: Color,
+        title: String,
+        subtitle: String,
+        progress: Double? = nil,
+        showRetry: Bool = false,
+        showCancel: Bool = false
+    ) -> some View {
+        VStack(spacing: 8) {
+            HStack {
+                Image(systemName: icon)
+                    .foregroundStyle(color)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                
+                HStack(spacing: 8) {
+                    if showRetry {
+                        Button("Retry") {
+                            startDownload()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                    
+                    if showCancel {
+                        Button("Cancel") {
+                            downloadManager.cancelDownload(for: document.id.uuidString)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .foregroundStyle(.red)
+                    }
+                }
+            }
+            
+            if let progress = progress {
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+            }
         }
-        
-        // Check if we can create a SpeechService instance to check caching
-        let tempService = SpeechService()
-        return tempService.isAudioCached(for: document.plainText)
+        .padding()
+        .background(Color.primary.colorInvert().opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

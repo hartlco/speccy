@@ -1,0 +1,178 @@
+import Foundation
+import SwiftUI
+import Combine
+
+@MainActor
+class DownloadManager: ObservableObject {
+    static let shared = DownloadManager()
+    
+    enum DownloadState {
+        case pending
+        case downloading(progress: Double)
+        case completed
+        case failed(Error)
+        case cancelled
+    }
+    
+    struct DownloadItem: Identifiable {
+        let id: String
+        let documentId: String
+        let title: String
+        let text: String
+        var state: DownloadState
+        let createdAt: Date
+        
+        var isActive: Bool {
+            switch state {
+            case .pending, .downloading:
+                return true
+            case .completed, .failed, .cancelled:
+                return false
+            }
+        }
+    }
+    
+    @Published private(set) var downloads: [DownloadItem] = []
+    private var speechService: SpeechService
+    private var activeDownloads: [String: Task<Void, Never>] = [:]
+    
+    private init() {
+        self.speechService = SpeechService()
+    }
+    
+    func startDownload(for documentId: String, title: String, text: String) {
+        let downloadId = "\(documentId)_\(Date().timeIntervalSince1970)"
+        
+        // Cancel any existing download for this document
+        cancelDownload(for: documentId)
+        
+        // Remove any old downloads for this document
+        downloads.removeAll { $0.documentId == documentId }
+        
+        // Create new download item
+        let downloadItem = DownloadItem(
+            id: downloadId,
+            documentId: documentId,
+            title: title,
+            text: text,
+            state: .pending,
+            createdAt: Date()
+        )
+        
+        downloads.append(downloadItem)
+        
+        // Start the download task
+        let task = Task { @MainActor in
+            await performDownload(downloadId: downloadId, text: text)
+        }
+        
+        activeDownloads[downloadId] = task
+    }
+    
+    func cancelDownload(for documentId: String) {
+        // Find and cancel active downloads for this document
+        if let downloadItem = downloads.first(where: { $0.documentId == documentId && $0.isActive }) {
+            activeDownloads[downloadItem.id]?.cancel()
+            activeDownloads.removeValue(forKey: downloadItem.id)
+            
+            if let index = downloads.firstIndex(where: { $0.id == downloadItem.id }) {
+                downloads[index].state = .cancelled
+            }
+        }
+    }
+    
+    func retryDownload(_ downloadId: String) {
+        guard let index = downloads.firstIndex(where: { $0.id == downloadId }) else { return }
+        let download = downloads[index]
+        
+        downloads[index].state = .pending
+        
+        let task = Task { @MainActor in
+            await performDownload(downloadId: downloadId, text: download.text)
+        }
+        
+        activeDownloads[downloadId] = task
+    }
+    
+    func removeDownload(_ downloadId: String) {
+        // Cancel if active
+        activeDownloads[downloadId]?.cancel()
+        activeDownloads.removeValue(forKey: downloadId)
+        
+        // Remove from list
+        downloads.removeAll { $0.id == downloadId }
+    }
+    
+    func getDownloadState(for documentId: String) -> DownloadState? {
+        return downloads.first { $0.documentId == documentId }?.state
+    }
+    
+    func isAudioCached(for documentId: String, text: String) -> Bool {
+        // Check if there's a completed download
+        if let download = downloads.first(where: { $0.documentId == documentId && $0.text == text }) {
+            if case .completed = download.state {
+                return true
+            }
+        }
+        
+        // Check physical cache
+        return speechService.isAudioCached(for: text)
+    }
+    
+    private func performDownload(downloadId: String, text: String) async {
+        guard let index = downloads.firstIndex(where: { $0.id == downloadId }) else { return }
+        
+        downloads[index].state = .downloading(progress: 0.0)
+        
+        await withCheckedContinuation { continuation in
+            speechService.preloadAudio(
+                text: text,
+                onProgress: { [weak self] progress in
+                    Task { @MainActor in
+                        guard let self = self,
+                              let index = self.downloads.firstIndex(where: { $0.id == downloadId }) else { return }
+                        self.downloads[index].state = .downloading(progress: progress)
+                    }
+                },
+                onCompletion: { [weak self] result in
+                    Task { @MainActor in
+                        guard let self = self,
+                              let index = self.downloads.firstIndex(where: { $0.id == downloadId }) else { 
+                            continuation.resume()
+                            return 
+                        }
+                        
+                        switch result {
+                        case .success:
+                            self.downloads[index].state = .completed
+                        case .failure(let error):
+                            self.downloads[index].state = .failed(error)
+                        }
+                        
+                        self.activeDownloads.removeValue(forKey: downloadId)
+                        continuation.resume()
+                    }
+                }
+            )
+        }
+    }
+    
+    // MARK: - Cleanup
+    
+    func cleanupOldDownloads() {
+        let oneWeekAgo = Date().addingTimeInterval(-7 * 24 * 60 * 60)
+        downloads.removeAll { download in
+            !download.isActive && download.createdAt < oneWeekAgo
+        }
+    }
+    
+    // MARK: - Computed Properties
+    
+    var activeDownloadsCount: Int {
+        downloads.filter { $0.isActive }.count
+    }
+    
+    var hasActiveDownloads: Bool {
+        downloads.contains { $0.isActive }
+    }
+}

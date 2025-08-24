@@ -4,9 +4,11 @@ import SwiftUI
 struct DocumentListView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \SpeechDocument.updatedAt, order: .reverse) private var documents: [SpeechDocument]
+    @ObservedObject private var downloadManager = DownloadManager.shared
 
     @State private var showingNew = false
     @State private var showingSettings = false
+    @State private var showingDownloads = false
 
     var body: some View {
         NavigationStack {
@@ -26,25 +28,48 @@ struct DocumentListView: View {
             .navigationTitle("Documents")
             .toolbar {
                 #if os(iOS)
+                ToolbarItem(placement: .topBarLeading) {
+                    HStack {
+                        Button(action: { showingSettings = true }) { 
+                            Image(systemName: "gearshape") 
+                        }
+                        Button(action: { showingDownloads = true }) { 
+                            ZStack {
+                                Image(systemName: "arrow.down.circle")
+                                if downloadManager.hasActiveDownloads {
+                                    Circle()
+                                        .fill(.red)
+                                        .frame(width: 8, height: 8)
+                                        .offset(x: 8, y: -8)
+                                }
+                            }
+                        }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(action: { showingNew = true }) { Image(systemName: "plus") }
                 }
-                ToolbarItem(placement: .topBarLeading) {
+                #else
+                ToolbarItem(placement: .automatic) {
                     Button(action: { showingSettings = true }) { Image(systemName: "gearshape") }
                 }
-                #else
+                ToolbarItem(placement: .automatic) {
+                    Button(action: { showingDownloads = true }) { 
+                        ZStack {
+                            Image(systemName: "arrow.down.circle")
+                            if downloadManager.hasActiveDownloads {
+                                Circle()
+                                    .fill(.red)
+                                    .frame(width: 8, height: 8)
+                                    .offset(x: 8, y: -8)
+                            }
+                        }
+                    }
+                }
                 ToolbarItem(placement: .automatic) {
                     Button(action: { showingNew = true }) { Image(systemName: "plus") }
                 }
-                ToolbarItem(placement: .automatic) {
-                    Button(action: { showingSettings = true }) { Image(systemName: "gearshape") }
-                }
                 #endif
-                ToolbarItem(placement: .automatic) {
-                    NavigationLink(value: SpeechDocument(title: "Sample", markdown: sampleMD)) {
-                        Image(systemName: "play.circle")
-                    }.hidden() // placeholder for toolbar layout if needed
-                }
             }
             .navigationDestination(for: SpeechDocument.self) { doc in
                 DocumentDetailView(document: doc)
@@ -65,6 +90,9 @@ struct DocumentListView: View {
             .sheet(isPresented: $showingSettings) {
                 NavigationStack { SettingsView() }
                     .presentationDetents([.medium, .large])
+            }
+            .sheet(isPresented: $showingDownloads) {
+                DownloadsView()
             }
         }
     }
