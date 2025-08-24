@@ -23,16 +23,26 @@ struct MiniPlayerView: View {
                     .buttonStyle(.plain)
                     .disabled(playbackManager.isLoading)
                     
-                    // Title and status
+                    // Title and status - tappable area to open full player
                     VStack(alignment: .leading, spacing: 2) {
                         Text(playbackManager.currentTitle)
                             .font(.subheadline)
                             .fontWeight(.medium)
                             .lineLimit(1)
                         
-                        Text(statusText)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        HStack(spacing: 4) {
+                            Text(statusText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            
+                            Image(systemName: "chevron.up")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        openFullPlayer()
                     }
                     
                     Spacer()
@@ -58,9 +68,6 @@ struct MiniPlayerView: View {
                 insertion: .move(edge: .bottom).combined(with: .opacity),
                 removal: .move(edge: .bottom).combined(with: .opacity)
             ))
-            .onTapGesture {
-                openFullPlayer()
-            }
             .sheet(isPresented: $showingFullPlayer) {
                 if let session = playbackManager.openFullPlayer() {
                     SpeechPlayerView(

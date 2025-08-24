@@ -12,7 +12,7 @@ import SwiftData
 struct speccyApp: App {
     var body: some Scene {
         WindowGroup {
-            DocumentListView()
+            ContentView()
         }
         .modelContainer(for: SpeechDocument.self)
     }
