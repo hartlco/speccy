@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import UIKit
 
 @MainActor
 class DownloadManager: ObservableObject {
@@ -38,6 +39,27 @@ class DownloadManager: ObservableObject {
     
     private init() {
         self.speechService = SpeechService()
+        
+        // Set up background task handling for downloads
+        setupBackgroundTaskSupport()
+    }
+    
+    private func setupBackgroundTaskSupport() {
+        // Observe app state changes to handle background downloads
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleAppEnterBackground()
+        }
+    }
+    
+    private func handleAppEnterBackground() {
+        AppLogger.shared.info("App entering background with \(activeDownloadsCount) active downloads", category: .download)
+        
+        // Background downloads will continue automatically with URLSessionConfiguration.background
+        // No additional action needed as the system handles background downloads
     }
     
     func startDownload(for documentId: String, title: String, text: String) {

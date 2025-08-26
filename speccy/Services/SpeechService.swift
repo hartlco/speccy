@@ -19,8 +19,10 @@ final class SpeechService: NSObject, ObservableObject {
     private var audioPlayer: AVAudioPlayer?
     private var progressTimer: Timer?
     private lazy var urlSession: URLSession = {
-        let config = URLSessionConfiguration.default
+        let config = URLSessionConfiguration.background(withIdentifier: "com.speccy.background-downloads")
         config.waitsForConnectivity = true
+        config.isDiscretionary = false // Don't wait for optimal conditions
+        config.sessionSendsLaunchEvents = true // Launch app when downloads complete
         // Use main operation queue for delegate callbacks to ensure main-actor updates
         return URLSession(configuration: config, delegate: self, delegateQueue: OperationQueue.main)
     }()
@@ -127,6 +129,8 @@ final class SpeechService: NSObject, ObservableObject {
         downloadNext()
     }
     
+    private var preloadCompletions: [Int: (Result<Void, Error>) -> Void] = [:]
+    
     private func downloadSingleChunk(text: String, destination: URL, config: OpenAIConfig, completion: @escaping (Result<Void, Error>) -> Void) {
         struct Payload: Encodable { let model: String; let voice: String; let input: String; let format: String }
         let payload = Payload(model: config.model, voice: config.voice, input: text, format: config.format)
@@ -143,33 +147,12 @@ final class SpeechService: NSObject, ObservableObject {
             return
         }
         
-        let task = URLSession.shared.downloadTask(with: request) { location, response, error in
-            if let error = error {
-                DispatchQueue.main.async { completion(.failure(error)) }
-                return
-            }
-            
-            guard let location = location else {
-                DispatchQueue.main.async { 
-                    completion(.failure(NSError(domain: "SpeechService", code: 2, userInfo: [NSLocalizedDescriptionKey: "No download location"])))
-                }
-                return
-            }
-            
-            do {
-                let dir = destination.deletingLastPathComponent()
-                if !FileManager.default.fileExists(atPath: dir.path) {
-                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                }
-                if FileManager.default.fileExists(atPath: destination.path) {
-                    try FileManager.default.removeItem(at: destination)
-                }
-                try FileManager.default.moveItem(at: location, to: destination)
-                DispatchQueue.main.async { completion(.success(())) }
-            } catch {
-                DispatchQueue.main.async { completion(.failure(error)) }
-            }
-        }
+        // Use the main background session and delegate pattern
+        let task = urlSession.downloadTask(with: request)
+        
+        // Store the completion handler and destination for this task
+        preloadCompletions[task.taskIdentifier] = completion
+        downloadDestinations[task.taskIdentifier] = destination
         
         task.resume()
     }
@@ -668,6 +651,7 @@ extension SpeechService: URLSessionDownloadDelegate, AVAudioPlayerDelegate {
             state = .idle
             return
         }
+        
         do {
             // Ensure directory exists
             let dir = destination.deletingLastPathComponent()
@@ -678,26 +662,61 @@ extension SpeechService: URLSessionDownloadDelegate, AVAudioPlayerDelegate {
                 try FileManager.default.removeItem(at: destination)
             }
             try FileManager.default.moveItem(at: location, to: destination)
-            downloadedChunksCount += 1
-            // If all downloads complete, start playback; otherwise continue downloading next
-            if downloadedChunksCount >= chunksTotalCount || pendingDownloads.isEmpty {
-                if chunkDurations.isEmpty { computeChunkDurations() }
-                playChunk(at: initialChunkIndex ?? 0)
-            } else if let config = loadOpenAIConfig() {
-                startNextDownload(config: config)
+            
+            // Check if this is a preload download
+            if let completion = preloadCompletions[downloadTask.taskIdentifier] {
+                // This is a preload download - call completion and clean up
+                completion(.success(()))
+                preloadCompletions.removeValue(forKey: downloadTask.taskIdentifier)
+            } else {
+                // This is a regular speech download - continue with existing logic
+                downloadedChunksCount += 1
+                // If all downloads complete, start playback; otherwise continue downloading next
+                if downloadedChunksCount >= chunksTotalCount || pendingDownloads.isEmpty {
+                    if chunkDurations.isEmpty { computeChunkDurations() }
+                    playChunk(at: initialChunkIndex ?? 0)
+                } else if let config = loadOpenAIConfig() {
+                    startNextDownload(config: config)
+                }
             }
         } catch {
             print("Failed moving downloaded audio: \(error)")
-            state = .idle
-            log("Error: Failed moving download: \(error.localizedDescription)")
+            
+            // Handle error for both types of downloads
+            if let completion = preloadCompletions[downloadTask.taskIdentifier] {
+                completion(.failure(error))
+                preloadCompletions.removeValue(forKey: downloadTask.taskIdentifier)
+            } else {
+                state = .idle
+                log("Error: Failed moving download: \(error.localizedDescription)")
+            }
         }
+        
         downloadDestinations.removeValue(forKey: downloadTask.taskIdentifier)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if let error {
             print("Download failed: \(error)")
-            state = .idle
+            
+            // Handle error for preload downloads
+            if let completion = preloadCompletions[task.taskIdentifier] {
+                completion(.failure(error))
+                preloadCompletions.removeValue(forKey: task.taskIdentifier)
+            } else {
+                // Handle error for regular speech downloads
+                state = .idle
+            }
+            
+            // Clean up
+            downloadDestinations.removeValue(forKey: task.taskIdentifier)
+        }
+    }
+    
+    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        // Call the completion handler to inform the system that background processing is complete
+        if let identifier = session.configuration.identifier {
+            BackgroundSessionManager.shared.callCompletionHandler(for: identifier)
         }
     }
 
