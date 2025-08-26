@@ -23,8 +23,16 @@ class PlaybackManager: ObservableObject {
     
     private var speechService: SpeechService?
     private var progressCancellable: AnyCancellable?
+    private var speedChangeCancellable: AnyCancellable?
     
-    private init() {}
+    private init() {
+        // Observe playback speed changes and update active speech service
+        speedChangeCancellable = UserPreferences.shared.$playbackSpeed
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] newSpeed in
+                self?.speechService?.setPlaybackRate(newSpeed)
+            }
+    }
     
     var hasActiveSession: Bool {
         currentSession != nil && (isPlaying || isPaused || isLoading)

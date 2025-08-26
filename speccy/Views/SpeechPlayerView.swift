@@ -207,7 +207,7 @@ struct SpeechPlayerView: View {
     }
 
     private var utteranceRate: Float {
-        return 0.5 // Default speech rate
+        return preferences.playbackSpeed
     }
 
     private var progressLabel: String {

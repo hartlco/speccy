@@ -175,12 +175,16 @@ final class SpeechService: NSObject, ObservableObject {
         stop()
         nowPlayingTitle = title
         currentResumeKey = resumeKey
+        
+        // Set the playback rate for this session
+        currentPlaybackRate = rate
+        
         let textHash = sha256(text)
         currentTextHash = textHash
         let saved = resumeKey.flatMap { loadProgress(forKey: $0) }
         let validSaved = (saved?.textHash == textHash) ? saved : nil
 
-        AppLogger.shared.info("Starting speech synthesis for '\(title ?? "Untitled")'", category: .speech)
+        AppLogger.shared.info("Starting speech synthesis for '\(title ?? "Untitled")' at rate \(rate)x", category: .speech)
 
         // Split long texts into chunks and cache each
         guard let config = loadOpenAIConfig() else {
