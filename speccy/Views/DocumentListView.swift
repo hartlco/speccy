@@ -77,7 +77,7 @@ struct DocumentListView: View {
             .sheet(isPresented: $showingNew) {
                 NavigationStack {
                     DocumentEditorView(
-                        document: SpeechDocument(title: "Untitled", markdown: ""), 
+                        document: SpeechDocument(title: "", markdown: ""), 
                         isNew: true,
                         onSave: { _ in
                             // After creating a new document, the navigation will show it in detail view

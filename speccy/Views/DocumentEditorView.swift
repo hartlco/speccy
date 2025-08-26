@@ -43,7 +43,7 @@ struct DocumentEditorView: View {
             #endif
         }
         .onAppear {
-            title = document.title
+            title = document.title == "Untitled" ? "" : document.title
             markdown = document.markdown
             originalContent = document.plainText
         }
@@ -54,7 +54,8 @@ struct DocumentEditorView: View {
     }
 
     private func save() {
-        document.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        document.title = trimmedTitle.isEmpty ? "Untitled" : trimmedTitle
         document.markdown = markdown
         document.updatedAt = .now
         if isNew {
