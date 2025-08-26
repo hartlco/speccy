@@ -1,17 +1,17 @@
 # Speccy
 
-A SwiftUI text‑to‑speech app with selectable engines:
-- System TTS (AVSpeechSynthesizer)
-- OpenAI TTS with offline cache and progress UI
+A SwiftUI text‑to‑speech app using OpenAI TTS with offline cache and progress UI
 
 It’s fully vibe coded — no storyboards, just clean SwiftUI and services.
 
 ## Features
-- System and OpenAI Text‑to‑Speech
-- Download‑once, play‑offline cache for OpenAI audio
-- Pause/resume with accurate progress
-- Per‑document language selection (System engine)
-- Simple Settings screen to manage OpenAI config and default engine
+- OpenAI Text‑to‑Speech with high-quality voices
+- Download‑once, play‑offline cache for all audio
+- Pause/resume with accurate progress tracking
+- Background playback with mini-player controls
+- Playback speed control and preferences
+- Centralized download management with progress tracking
+- Simple Settings screen to manage OpenAI configuration
 
 ## Getting started
 1. Clone the repo and open `speccy.xcodeproj` in Xcode.
@@ -29,14 +29,22 @@ Optional keys (also manageable from Settings):
 - `OPENAI_TTS_VOICE` (default: `alloy`)
 - `OPENAI_TTS_FORMAT` (default: `mp3`)
 
-## How OpenAI audio works
+## How it works
 - First play: audio is requested once and downloaded with a visible progress bar
 - Subsequent plays: the cached file is used for instant, offline playback
 - Cache location: Application Support `tts-cache/`
 
+## Background Playback
+- Audio continues playing when the detail view is closed
+- Mini-player appears at the bottom of the screen during active playback
+- Control playback from the mini-player: play/pause, stop, and progress tracking
+- Tap the mini-player to return to the full player view
+
 ## Notes
-- Speed control applies to the System engine. OpenAI playback uses the generated audio as‑is.
-- Engine choice is persisted and restored on launch.
+- Uses OpenAI's TTS API for high-quality speech synthesis
+- Downloads are managed centrally and cached for offline playback
+- Background playback works across the entire app interface
+- Playback speed can be adjusted in real-time
 
 ## Tech
 - SwiftUI, SwiftData, AVFoundation, URLSession

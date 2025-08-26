@@ -158,10 +158,20 @@ struct SpeechPlayerView: View {
     }
 
     private var playPauseIcon: String {
-        switch speech.state {
-        case .idle, .paused: "play.fill"
-        case .downloading: "pause.fill"
-        case .speaking: "pause.fill"
+        if isConnectedToManager {
+            if playbackManager.isLoading {
+                return "circle.dotted"
+            } else if playbackManager.isPlaying {
+                return "pause.fill"
+            } else {
+                return "play.fill"
+            }
+        } else {
+            switch speech.state {
+            case .idle, .paused: return "play.fill"
+            case .downloading: return "circle.dotted"
+            case .speaking: return "pause.fill"
+            }
         }
     }
 
@@ -201,15 +211,27 @@ struct SpeechPlayerView: View {
     }
 
     private var progressLabel: String {
-        switch speech.state {
-        case .idle:
-            return "Idle"
-        case .downloading(let value):
-            return String(format: "Downloading… %.0f%%", value * 100)
-        case .speaking:
-            return "Playing"
-        case .paused:
-            return "Paused"
+        if isConnectedToManager {
+            if playbackManager.isLoading {
+                return String(format: "Downloading… %.0f%%", playbackManager.progress * 100)
+            } else if playbackManager.isPlaying {
+                return "Playing"
+            } else if playbackManager.isPaused {
+                return "Paused"
+            } else {
+                return "Ready"
+            }
+        } else {
+            switch speech.state {
+            case .idle:
+                return "Idle"
+            case .downloading(let value):
+                return String(format: "Downloading… %.0f%%", value * 100)
+            case .speaking:
+                return "Playing"
+            case .paused:
+                return "Paused"
+            }
         }
     }
 }
