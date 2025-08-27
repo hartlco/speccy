@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SpeechPlayerView: View {
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var speech = SpeechService()
+    @ObservedObject private var speech = SpeechService.shared
     @ObservedObject private var preferences = UserPreferences.shared
     @ObservedObject private var playbackManager = PlaybackManager.shared
 

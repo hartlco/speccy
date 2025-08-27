@@ -5,7 +5,7 @@ struct DocumentDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @ObservedObject private var downloadManager = DownloadManager.shared
     @ObservedObject private var playbackManager = PlaybackManager.shared
-    @StateObject private var speechService = SpeechService()
+    @ObservedObject private var speechService = SpeechService.shared
     
     @State var document: SpeechDocument
     @State private var showingEditor = false

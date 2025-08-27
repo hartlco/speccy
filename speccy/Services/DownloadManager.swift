@@ -40,7 +40,7 @@ class DownloadManager: ObservableObject {
     private var activeDownloads: [String: Task<Void, Never>] = [:]
     
     private init() {
-        self.speechService = SpeechService()
+        self.speechService = SpeechService.shared
         
         // Set up background task handling for downloads
         setupBackgroundTaskSupport()

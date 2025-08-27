@@ -4,12 +4,12 @@ import SwiftUI
 
 @Model
 final class SpeechDocument {
-    var id: UUID
-    var title: String
-    var markdown: String
+    var id: UUID = UUID()
+    var title: String = ""
+    var markdown: String = ""
     var languageCode: String?
-    var createdAt: Date
-    var updatedAt: Date
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
 
     init(id: UUID = UUID(), title: String, markdown: String, languageCode: String? = nil, createdAt: Date = .now, updatedAt: Date = .now) {
         self.id = id

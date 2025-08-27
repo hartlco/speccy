@@ -7,6 +7,12 @@ struct DownloadsView: View {
     var body: some View {
         NavigationView {
             List {
+                Section {
+                    iCloudStatusView()
+                } header: {
+                    Text("Sync Status")
+                }
+                
                 if downloadManager.downloads.isEmpty {
                     ContentUnavailableView(
                         "No Downloads",
