@@ -5,6 +5,7 @@
 //  Created by Claude Code on 26.08.25.
 //
 
+#if canImport(UIKit)
 import UIKit
 
 class AppDelegate: NSObject, UIApplicationDelegate {
@@ -29,3 +30,19 @@ class BackgroundSessionManager {
         completionHandlers.removeValue(forKey: identifier)
     }
 }
+#else
+// macOS fallback implementation
+class BackgroundSessionManager {
+    static let shared = BackgroundSessionManager()
+    
+    private init() {}
+    
+    func setCompletionHandler(_ handler: @escaping () -> Void, for identifier: String) {
+        // No-op on macOS
+    }
+    
+    func callCompletionHandler(for identifier: String) {
+        // No-op on macOS
+    }
+}
+#endif

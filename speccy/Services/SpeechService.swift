@@ -528,10 +528,10 @@ final class SpeechService: NSObject, ObservableObject {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
-    private var currentPlayerElapsed: TimeInterval {
+    var currentPlayerElapsed: TimeInterval {
         audioPlayer?.currentTime ?? 0
     }
-    private var currentPlayerDuration: TimeInterval {
+    var currentPlayerDuration: TimeInterval {
         audioPlayer?.duration ?? 1
     }
 
@@ -560,6 +560,15 @@ final class SpeechService: NSObject, ObservableObject {
             player.enableRate = true
             player.rate = max(0.5, min(rate, 2.0))
         }
+    }
+    
+    func nextChunk() {
+        playChunk(at: currentChunkIndex + 1)
+    }
+    
+    func previousChunk() {
+        let prev = max(currentChunkIndex - 1, 0)
+        playChunk(at: prev)
     }
 
     func seek(toFraction fraction: Double, fullText: String, languageCode: String?, rate: Float) {

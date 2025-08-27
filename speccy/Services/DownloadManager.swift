@@ -1,7 +1,9 @@
 import Foundation
 import SwiftUI
 import Combine
+#if canImport(UIKit)
 import UIKit
+#endif
 
 @MainActor
 class DownloadManager: ObservableObject {
@@ -46,6 +48,7 @@ class DownloadManager: ObservableObject {
     
     private func setupBackgroundTaskSupport() {
         // Observe app state changes to handle background downloads
+        #if canImport(UIKit)
         NotificationCenter.default.addObserver(
             forName: UIApplication.didEnterBackgroundNotification,
             object: nil,
@@ -53,6 +56,7 @@ class DownloadManager: ObservableObject {
         ) { [weak self] _ in
             self?.handleAppEnterBackground()
         }
+        #endif
     }
     
     private func handleAppEnterBackground() {

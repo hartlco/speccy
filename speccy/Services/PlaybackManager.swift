@@ -130,6 +130,14 @@ class PlaybackManager: ObservableObject {
         )
     }
     
+    func nextChunk() {
+        speechService?.nextChunk()
+    }
+    
+    func previousChunk() {
+        speechService?.previousChunk()
+    }
+    
     private func startMonitoring() {
         guard let speechService = speechService else { return }
         

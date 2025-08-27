@@ -15,43 +15,70 @@ struct SpeechPlayerView: View {
     @State private var isConnectedToManager: Bool = false
 
     var body: some View {
-        VStack(spacing: 24) {
-            // Scrubber (seek only on release)
-            Slider(value: $scrubValue, in: 0...1, onEditingChanged: { editing in
-                isScrubbing = editing
-                if !editing {
-                    if isConnectedToManager {
-                        playbackManager.seek(to: scrubValue)
-                    } else {
-                        speech.seek(toFraction: scrubValue, fullText: text, languageCode: languageCode, rate: utteranceRate)
-                    }
-                }
-            })
-            Text(progressLabel)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            if !speech.logs.isEmpty {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(Array(speech.logs.enumerated()), id: \.offset) { _, line in
-                            Text(line)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(spacing: 32) {
+            Spacer()
+            
+            // Title section
+            VStack(spacing: 8) {
+                Text(title ?? "Untitled Document")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                
+                Text(progressLabel)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal)
+            
+            Spacer()
+            
+            // Progress section
+            VStack(spacing: 12) {
+                Slider(value: $scrubValue, in: 0...1, onEditingChanged: { editing in
+                    isScrubbing = editing
+                    if !editing {
+                        if isConnectedToManager {
+                            playbackManager.seek(to: scrubValue)
+                        } else {
+                            speech.seek(toFraction: scrubValue, fullText: text, languageCode: languageCode, rate: utteranceRate)
                         }
                     }
-                }
-                .frame(maxHeight: 120)
-            }
-
-            VStack(spacing: 12) {
+                })
+                .tint(.accentColor)
+                
                 HStack {
-                    Text("Speed")
+                    Text(formatTime(currentTime))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    
+                    Spacer()
+                    
+                    Text(formatTime(totalTime))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+            .padding(.horizontal)
+            Spacer()
+            
+            // Speed controls
+            VStack(spacing: 16) {
+                HStack {
+                    Text("Playback Speed")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                     Spacer()
                     Text(String(format: "%.1fx", Double(preferences.playbackSpeed)))
+                        .font(.subheadline)
+                        .fontWeight(.medium)
                         .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.primary)
                 }
+                
                 Picker("Speed", selection: $preferences.playbackSpeed) {
                     ForEach(preferences.availablePlaybackSpeeds, id: \.self) { rate in
                         Text(String(format: "%.1fx", Double(rate))).tag(rate)
@@ -62,28 +89,60 @@ struct SpeechPlayerView: View {
                     speech.setPlaybackRate(newVal)
                 }
             }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
             .padding(.horizontal)
 
-            HStack(spacing: 24) {
+            // Control buttons
+            HStack(spacing: 40) {
+                Button(action: previousChunk) {
+                    Image(systemName: "backward.fill")
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundStyle(.primary)
+                }
+                .disabled(!canNavigateBackward)
+                
                 Button(action: toggle) {
                     Image(systemName: playPauseIcon)
-                        .font(.system(size: 28, weight: .bold))
+                        .font(.system(size: 44, weight: .medium))
+                        .foregroundStyle(.primary)
                 }
+                .scaleEffect(isPlaying ? 0.95 : 1.0)
+                .animation(.easeInOut(duration: 0.1), value: isPlaying)
+                
+                Button(action: nextChunk) {
+                    Image(systemName: "forward.fill")
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundStyle(.primary)
+                }
+                .disabled(!canNavigateForward)
+            }
+            .padding(.vertical, 20)
+            
+            // Secondary controls
+            HStack(spacing: 32) {
                 Button(role: .destructive, action: stop) {
                     Image(systemName: "stop.fill")
-                        .font(.system(size: 24, weight: .bold))
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(.secondary)
                 }
             }
-            .padding(.top, 8)
+            .padding(.bottom, 16)
+            
+            // Preview text
             Text(previewText)
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .font(.footnote)
+                .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
-                .lineLimit(3)
-                .padding(.horizontal)
+                .lineLimit(2)
+                .padding(.horizontal, 24)
+            
             Spacer()
         }
-        .padding()
+        .padding(.horizontal, 20)
+        .padding(.vertical, 32)
+        .background(.regularMaterial)
         .onAppear {
             scrubValue = progress
             speech.setPlaybackRate(preferences.playbackSpeed)
@@ -208,6 +267,55 @@ struct SpeechPlayerView: View {
 
     private var utteranceRate: Float {
         return preferences.playbackSpeed
+    }
+    
+    private var isPlaying: Bool {
+        if isConnectedToManager {
+            return playbackManager.isPlaying
+        } else {
+            switch speech.state {
+            case .speaking: return true
+            default: return false
+            }
+        }
+    }
+    
+    private var canNavigateBackward: Bool {
+        return true
+    }
+    
+    private var canNavigateForward: Bool {
+        return true
+    }
+    
+    private var currentTime: TimeInterval {
+        return speech.currentPlayerElapsed
+    }
+    
+    private var totalTime: TimeInterval {
+        return speech.currentPlayerDuration
+    }
+    
+    private func previousChunk() {
+        if isConnectedToManager {
+            playbackManager.previousChunk()
+        } else {
+            speech.previousChunk()
+        }
+    }
+    
+    private func nextChunk() {
+        if isConnectedToManager {
+            playbackManager.nextChunk()
+        } else {
+            speech.nextChunk()
+        }
+    }
+    
+    private func formatTime(_ time: TimeInterval) -> String {
+        let minutes = Int(time) / 60
+        let seconds = Int(time) % 60
+        return String(format: "%d:%02d", minutes, seconds)
     }
 
     private var progressLabel: String {
