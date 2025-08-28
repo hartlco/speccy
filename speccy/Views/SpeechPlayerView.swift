@@ -5,6 +5,7 @@ struct SpeechPlayerView: View {
     @ObservedObject private var speech = SpeechService.shared
     @ObservedObject private var preferences = UserPreferences.shared
     @ObservedObject private var playbackManager = PlaybackManager.shared
+    @ObservedObject private var consentManager = TTSConsentManager.shared
 
     let text: String
     var title: String? = nil
@@ -13,6 +14,8 @@ struct SpeechPlayerView: View {
     @State private var isScrubbing: Bool = false
     @State private var scrubValue: Double = 0
     @State private var isConnectedToManager: Bool = false
+    @State private var hasCheckedConsent: Bool = false
+    @State private var needsConsent: Bool = false
 
     var body: some View {
         VStack(spacing: 32) {
@@ -152,23 +155,11 @@ struct SpeechPlayerView: View {
                currentSession.resumeKey == resumeKey {
                 // Connect to existing session
                 isConnectedToManager = true
+                hasCheckedConsent = true
                 AppLogger.shared.info("Connected to existing playback session", category: .playback)
             } else {
-                // Start new playback
-                speech.speak(text: text, title: title, resumeKey: resumeKey, languageCode: languageCode, rate: utteranceRate)
-                
-                // Register with playback manager
-                if let documentId = resumeKey {
-                    playbackManager.startPlayback(
-                        documentId: documentId,
-                        title: title ?? "Untitled",
-                        text: text,
-                        languageCode: languageCode,
-                        resumeKey: resumeKey ?? "",
-                        speechService: speech
-                    )
-                    isConnectedToManager = true
-                }
+                // Check if audio is cached or available in sync first
+                checkForAudioAvailability()
             }
         }
         .onDisappear { 
@@ -200,6 +191,16 @@ struct SpeechPlayerView: View {
                 Button("Done") { dismiss() }
             }
             #endif
+        }
+        .overlay(alignment: .center) {
+            if consentManager.isShowingConsentDialog {
+                ZStack {
+                    Color.black.opacity(0.3)
+                        .ignoresSafeArea()
+                    
+                    TTSConsentDialog()
+                }
+            }
         }
     }
 
@@ -240,7 +241,11 @@ struct SpeechPlayerView: View {
         } else {
             switch speech.state {
             case .idle:
-                speech.speak(text: text, title: title, resumeKey: resumeKey, languageCode: languageCode, rate: utteranceRate)
+                if hasCheckedConsent {
+                    speech.speak(text: text, title: title, resumeKey: resumeKey, languageCode: languageCode, rate: utteranceRate)
+                } else {
+                    checkForAudioAvailability()
+                }
             case .speaking:
                 speech.pause()
             case .paused:
@@ -309,6 +314,67 @@ struct SpeechPlayerView: View {
             playbackManager.nextChunk()
         } else {
             speech.nextChunk()
+        }
+    }
+    
+    private func checkForAudioAvailability() {
+        Task {
+            // First check if audio is cached locally
+            let isCached = speech.isAudioCached(for: text)
+            if isCached {
+                await MainActor.run {
+                    startPlaybackDirectly()
+                }
+                return
+            }
+            
+            // Check if audio is available in sync
+            let isAvailableInSync = await speech.isAudioAvailableInSync(for: text)
+            if isAvailableInSync {
+                await MainActor.run {
+                    startPlaybackDirectly()
+                }
+                return
+            }
+            
+            // Audio needs to be generated, request consent
+            await MainActor.run {
+                requestTTSConsent()
+            }
+        }
+    }
+    
+    private func requestTTSConsent() {
+        consentManager.requestTTSGeneration(
+            text: text,
+            title: title ?? "Untitled",
+            onApprove: {
+                startPlaybackDirectly()
+            },
+            onDecline: {
+                // User declined, dismiss the player
+                dismiss()
+            }
+        )
+    }
+    
+    private func startPlaybackDirectly() {
+        hasCheckedConsent = true
+        
+        // Start new playback
+        speech.speak(text: text, title: title, resumeKey: resumeKey, languageCode: languageCode, rate: utteranceRate)
+        
+        // Register with playback manager
+        if let documentId = resumeKey {
+            playbackManager.startPlayback(
+                documentId: documentId,
+                title: title ?? "Untitled",
+                text: text,
+                languageCode: languageCode,
+                resumeKey: resumeKey ?? "",
+                speechService: speech
+            )
+            isConnectedToManager = true
         }
     }
     

@@ -68,45 +68,36 @@ After running the app:
 - Container identifier: `iCloud.com.speccy.documents`
 - Push notification environment (development)
 
-## Known Issues to Fix Next
+## Completed Issues ✅
 
-### 1. Duplicate TTS Generation
+### 1. Duplicate TTS Generation ✅ FIXED
 **Problem**: If a file is already downloaded on one platform, the app shouldn't request it again from OpenAI and should instead download from CloudKit.
 
-**Current Behavior**: 
-- App may generate TTS on both devices for the same text
-- Wastes OpenAI API calls and processing time
+**Solution Implemented**:
+- Enhanced `DocumentDetailView.checkAndStartDownload()` to use `isAudioAvailableInSync()` before TTS generation
+- Added async CloudKit sync check before falling back to OpenAI
+- Updated UI logic to prevent duplicate TTS generation across devices
 
-**Solution Needed**:
-- Enhance `isAudioAvailableInSync()` to be used before starting TTS generation
-- Add proper sync checking in UI before showing "Generate Audio" options
-- Wait for CloudKit sync check before falling back to OpenAI
-
-### 2. Missing CloudKit Operation Logging
+### 2. CloudKit Operation Logging ✅ FIXED
 **Problem**: No visibility into CloudKit upload/download operations for debugging.
 
-**Current Behavior**:
-- Silent CloudKit operations
-- Difficult to debug sync issues
-- Users don't know when files are being synced
+**Solution Implemented**:
+- Added comprehensive logging throughout `iCloudSyncManager`:
+  - Upload operations with file sizes and progress
+  - Download operations with timing and error details
+  - Database record creation/updates
+  - iCloud availability checks and error conditions
+- All CloudKit operations now log start, progress, and completion states
+- Enhanced error messages with specific failure reasons
 
-**Solution Needed**:
-- Add comprehensive logging for CloudKit file uploads
-- Add logging for CloudKit file downloads  
-- Add progress indicators in UI for sync operations
-- Log sync errors and conflicts
-
-### 3. Missing User Consent for TTS Generation
+### 3. User Consent for TTS Generation ✅ FIXED
 **Problem**: App automatically generates TTS without asking user permission, especially problematic when same file might be generating on different platform.
 
-**Current Behavior**:
-- Automatic TTS generation on download
-- No user control over expensive operations
-- Potential for duplicate work across devices
-
-**Solution Needed**:
-- Add explicit user confirmation before TTS generation
-- Show estimated cost/time for TTS generation
-- Add setting to control automatic TTS behavior
-- Check CloudKit for existing files before prompting user
-- Show "Audio available on other device - download instead?" option
+**Solution Implemented**:
+- Created new `TTSConsentManager` service for handling user consent
+- Added `TTSConsentDialog` view with cost/time estimates
+- Integrated consent checks in both `DocumentDetailView` and `SpeechPlayerView`
+- Auto-approves small texts (<100 chars) to avoid friction
+- Shows estimated cost (based on OpenAI pricing), time, and chunk count
+- Includes CloudKit availability check information
+- Users can approve or decline TTS generation with full information

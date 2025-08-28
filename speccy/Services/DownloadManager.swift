@@ -17,12 +17,22 @@ class DownloadManager: ObservableObject {
         case cancelled
     }
     
+    enum SyncState {
+        case notSynced
+        case syncing
+        case synced
+        case availableInCloud // File exists in iCloud but not locally
+        case iCloudUnavailable // iCloud is not available (not signed in, container issues, etc.)
+        case syncFailed(Error)
+    }
+    
     struct DownloadItem: Identifiable {
         let id: String
         let documentId: String
         let title: String
         let text: String
         var state: DownloadState
+        var syncState: SyncState
         let createdAt: Date
         
         var isActive: Bool {
@@ -84,6 +94,7 @@ class DownloadManager: ObservableObject {
             title: title,
             text: text,
             state: .pending,
+            syncState: .notSynced,
             createdAt: Date()
         )
         
@@ -148,6 +159,118 @@ class DownloadManager: ObservableObject {
         return speechService.isAudioCached(for: text)
     }
     
+    func getSyncState(for documentId: String) -> SyncState? {
+        return downloads.first { $0.documentId == documentId }?.syncState
+    }
+    
+    func updateSyncState(for documentId: String, to newState: SyncState) {
+        if let index = downloads.firstIndex(where: { $0.documentId == documentId }) {
+            downloads[index].syncState = newState
+            AppLogger.shared.info("Updated sync state for \(downloads[index].title) to: \(newState)", category: .sync)
+        }
+    }
+    
+    func checkSyncAvailability(for documentId: String, text: String) {
+        Task {
+            // If iCloud is not available, set appropriate state
+            guard iCloudSyncManager.shared.iCloudAvailable else {
+                await MainActor.run {
+                    updateSyncState(for: documentId, to: .iCloudUnavailable)
+                }
+                return
+            }
+            
+            AppLogger.shared.info("Checking sync availability for document: \(documentId)", category: .sync)
+            
+            // Check if audio is available in iCloud (this now checks both database and physical files)
+            let isAvailableInSync = await speechService.isAudioAvailableInSync(for: text)
+            let isCachedLocally = speechService.isAudioCached(for: text)
+            
+            AppLogger.shared.info("Sync check results - isAvailableInSync: \(isAvailableInSync), isCachedLocally: \(isCachedLocally)", category: .sync)
+            
+            await MainActor.run {
+                if isAvailableInSync && !isCachedLocally {
+                    AppLogger.shared.info("Setting sync state to availableInCloud", category: .sync)
+                    updateSyncState(for: documentId, to: .availableInCloud)
+                } else if isAvailableInSync && isCachedLocally {
+                    AppLogger.shared.info("Setting sync state to synced", category: .sync)
+                    updateSyncState(for: documentId, to: .synced)
+                } else {
+                    AppLogger.shared.info("Setting sync state to notSynced", category: .sync)
+                    updateSyncState(for: documentId, to: .notSynced)
+                }
+            }
+        }
+    }
+    
+    // Refresh sync state for all downloads - useful when app becomes active
+    func refreshAllSyncStates() {
+        AppLogger.shared.info("Refreshing sync states for all downloads", category: .sync)
+        for download in downloads {
+            checkSyncAvailability(for: download.documentId, text: download.text)
+        }
+    }
+    
+    private func syncToiCloud(downloadId: String, text: String) {
+        guard let index = downloads.firstIndex(where: { $0.id == downloadId }) else { return }
+        let download = downloads[index]
+        
+        Task {
+            // Check if iCloud is available
+            guard iCloudSyncManager.shared.iCloudAvailable else {
+                AppLogger.shared.info("iCloud not available, skipping sync for '\(download.title)'", category: .sync)
+                await MainActor.run {
+                    self.downloads[index].syncState = .iCloudUnavailable
+                }
+                return
+            }
+            
+            guard let config = speechService.loadOpenAIConfig() else {
+                await MainActor.run {
+                    self.downloads[index].syncState = .syncFailed(NSError(domain: "DownloadManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Missing OpenAI config"]))
+                }
+                return
+            }
+            
+            do {
+                let parts = speechService.chunkText(text)
+                
+                // Sync each chunk to iCloud
+                for part in parts {
+                    let key = speechService.cacheKey(text: part, model: config.model, voice: config.voice, format: config.format)
+                    let localURL = speechService.ensureCacheFileURL(forKey: key, format: config.format)
+                    
+                    if FileManager.default.fileExists(atPath: localURL.path) {
+                        let contentHash = TTSAudioFile.contentHash(for: part, model: config.model, voice: config.voice, format: config.format)
+                        
+                        try await iCloudSyncManager.shared.syncAudioFileToiCloud(
+                            localURL: localURL,
+                            contentHash: contentHash,
+                            model: config.model,
+                            voice: config.voice,
+                            format: config.format
+                        )
+                    }
+                }
+                
+                await MainActor.run {
+                    if let currentIndex = self.downloads.firstIndex(where: { $0.id == downloadId }) {
+                        self.downloads[currentIndex].syncState = .synced
+                        AppLogger.shared.info("Successfully synced '\(download.title)' to iCloud", category: .sync)
+                    }
+                }
+                
+            } catch {
+                await MainActor.run {
+                    if let currentIndex = self.downloads.firstIndex(where: { $0.id == downloadId }) {
+                        self.downloads[currentIndex].syncState = .syncFailed(error)
+                        AppLogger.shared.error("Failed to sync '\(download.title)' to iCloud: \(error.localizedDescription)", category: .sync)
+                    }
+                }
+            }
+        }
+    }
+    
     private func performDownload(downloadId: String, text: String) async {
         guard let index = downloads.firstIndex(where: { $0.id == downloadId }) else { return }
         
@@ -178,9 +301,15 @@ class DownloadManager: ObservableObject {
                         switch result {
                         case .success:
                             self.downloads[index].state = .completed
+                            self.downloads[index].syncState = .syncing // Will start syncing to iCloud
                             AppLogger.shared.info("Download completed for '\(download.title)'", category: .download)
+                            
+                            // Start syncing to iCloud
+                            self.syncToiCloud(downloadId: downloadId, text: download.text)
+                            
                         case .failure(let error):
                             self.downloads[index].state = .failed(error)
+                            self.downloads[index].syncState = .syncFailed(error)
                             AppLogger.shared.error("Download failed for '\(download.title)': \(error.localizedDescription)", category: .download)
                         }
                         

@@ -21,10 +21,26 @@ final class SpeechService: NSObject, ObservableObject {
     private var audioPlayer: AVAudioPlayer?
     private var progressTimer: Timer?
     private lazy var urlSession: URLSession = {
+        #if os(macOS)
+        // On macOS, use default configuration as background sessions can be problematic
+        let config = URLSessionConfiguration.default
+        config.waitsForConnectivity = true
+        config.timeoutIntervalForRequest = 30.0
+        config.timeoutIntervalForResource = 300.0
+        // Add DNS resolution resilience
+        config.allowsCellularAccess = false // Not applicable on macOS but doesn't hurt
+        AppLogger.shared.info("Using default URL session configuration for macOS with DNS resilience", category: .download)
+        #else
+        // On iOS, use background configuration for proper background download support
         let config = URLSessionConfiguration.background(withIdentifier: "com.speccy.background-downloads")
         config.waitsForConnectivity = true
         config.isDiscretionary = false // Don't wait for optimal conditions
         config.sessionSendsLaunchEvents = true // Launch app when downloads complete
+        config.timeoutIntervalForRequest = 30.0
+        config.timeoutIntervalForResource = 300.0
+        AppLogger.shared.info("Using background URL session configuration for iOS", category: .download)
+        #endif
+        
         // Use main operation queue for delegate callbacks to ensure main-actor updates
         return URLSession(configuration: config, delegate: self, delegateQueue: OperationQueue.main)
     }()
@@ -196,6 +212,10 @@ final class SpeechService: NSObject, ObservableObject {
     private var preloadCompletions: [Int: (Result<Void, Error>) -> Void] = [:]
     
     private func downloadSingleChunk(text: String, destination: URL, config: OpenAIConfig, completion: @escaping (Result<Void, Error>) -> Void) {
+        downloadSingleChunkWithRetry(text: text, destination: destination, config: config, retryCount: 0, completion: completion)
+    }
+    
+    private func downloadSingleChunkWithRetry(text: String, destination: URL, config: OpenAIConfig, retryCount: Int, completion: @escaping (Result<Void, Error>) -> Void) {
         struct Payload: Encodable { let model: String; let voice: String; let input: String; let format: String }
         let payload = Payload(model: config.model, voice: config.voice, input: text, format: config.format)
         let url = URL(string: "https://api.openai.com/v1/audio/speech")!
@@ -211,13 +231,51 @@ final class SpeechService: NSObject, ObservableObject {
             return
         }
         
+        AppLogger.shared.info("Starting download attempt \(retryCount + 1) for chunk", category: .download)
+        
+        #if os(macOS)
+        if retryCount > 0 {
+            AppLogger.shared.info("Retrying download after DNS issue on macOS", category: .download)
+        }
+        #endif
+        
         // Use the main background session and delegate pattern
         let task = urlSession.downloadTask(with: request)
         
-        // Store the completion handler and destination for this task
-        preloadCompletions[task.taskIdentifier] = completion
-        downloadDestinations[task.taskIdentifier] = destination
+        // Store the completion handler with retry logic
+        preloadCompletions[task.taskIdentifier] = { result in
+            switch result {
+            case .success:
+                completion(.success(()))
+            case .failure(let error):
+                // Check if this is a DNS-related error and we haven't exceeded retry limit
+                let nsError = error as NSError
+                let isDNSError = nsError.domain == NSURLErrorDomain && 
+                               (nsError.code == NSURLErrorCannotFindHost || 
+                                nsError.code == NSURLErrorNotConnectedToInternet ||
+                                nsError.code == NSURLErrorDNSLookupFailed ||
+                                nsError.code == -1) // Generic network error, often DNS-related
+                
+                // Also check for DNS service errors in the error description
+                let errorDescription = error.localizedDescription.lowercased()
+                let isDNSServiceError = errorDescription.contains("dns") || 
+                                       errorDescription.contains("servicenotrunning") ||
+                                       errorDescription.contains("resolver")
+                
+                if (isDNSError || isDNSServiceError) && retryCount < 2 {
+                    AppLogger.shared.warning("DNS/Network error on attempt \(retryCount + 1), retrying: \(error.localizedDescription)", category: .download)
+                    // Retry after a brief delay
+                    DispatchQueue.main.asyncAfter(deadline: .now() + Double(retryCount + 1)) {
+                        self.downloadSingleChunkWithRetry(text: text, destination: destination, config: config, retryCount: retryCount + 1, completion: completion)
+                    }
+                } else {
+                    AppLogger.shared.error("Download failed after \(retryCount + 1) attempts: \(error.localizedDescription)", category: .download)
+                    completion(.failure(error))
+                }
+            }
+        }
         
+        downloadDestinations[task.taskIdentifier] = destination
         task.resume()
     }
     
@@ -235,34 +293,57 @@ final class SpeechService: NSObject, ObservableObject {
     }
     
     func isAudioAvailableInSync(for text: String) async -> Bool {
-        guard let config = loadOpenAIConfig(),
-              let modelContext = modelContext else { return false }
+        // If iCloud is not available, return false gracefully
+        guard iCloudSyncManager.shared.iCloudAvailable else {
+            AppLogger.shared.info("🔍 SYNC_CHECK: iCloud not available, sync check returning false", category: .sync)
+            return false
+        }
+        
+        guard let config = loadOpenAIConfig() else {
+            AppLogger.shared.error("🔍 SYNC_CHECK: No OpenAI config available", category: .sync)
+            return false
+        }
+        
+        guard let modelContext = modelContext else {
+            AppLogger.shared.error("🔍 SYNC_CHECK: No ModelContext available", category: .sync)
+            return false
+        }
+        
+        AppLogger.shared.info("🔍 SYNC_CHECK: Starting sync availability check for text (length: \(text.count))", category: .sync)
         
         let parts = chunkText(text)
         
-        for part in parts {
+        for (index, part) in parts.enumerated() {
             let contentHash = TTSAudioFile.contentHash(for: part, model: config.model, voice: config.voice, format: config.format)
+            AppLogger.shared.info("🔍 SYNC_CHECK: Checking chunk \(index + 1)/\(parts.count), hash: \(contentHash.prefix(8))", category: .sync)
             
             // Check local cache first
             let localURL = ensureCacheFileURL(forKey: contentHash, format: config.format)
             if FileManager.default.fileExists(atPath: localURL.path) {
+                AppLogger.shared.info("🔍 SYNC_CHECK: Chunk found in local cache: \(contentHash.prefix(8))", category: .cache)
                 continue
             }
             
-            // Check if available in iCloud sync
-            let predicate = #Predicate<TTSAudioFile> { $0.contentHash == contentHash }
-            let descriptor = FetchDescriptor<TTSAudioFile>(predicate: predicate)
+            AppLogger.shared.info("🔍 SYNC_CHECK: Chunk not in local cache, checking iCloud for: \(contentHash.prefix(8))", category: .sync)
             
+            // Check if available in iCloud sync using the improved method
             do {
-                let results = try modelContext.fetch(descriptor)
-                if results.isEmpty {
+                // Use the improved audioFileExists method from iCloudSyncManager
+                // which checks both local database AND physical iCloud files
+                let existsInSync = try await iCloudSyncManager.shared.audioFileExists(contentHash: contentHash)
+                if !existsInSync {
+                    AppLogger.shared.info("🔍 SYNC_CHECK: Chunk NOT available in iCloud for hash: \(contentHash.prefix(8))", category: .sync)
                     return false // This chunk is not available anywhere
+                } else {
+                    AppLogger.shared.info("🔍 SYNC_CHECK: Chunk IS available in iCloud for hash: \(contentHash.prefix(8))", category: .sync)
                 }
             } catch {
-                AppLogger.shared.error("Failed to check sync availability: \(error)", category: .cache)
+                AppLogger.shared.error("🔍 SYNC_CHECK: Failed to check iCloud availability for hash \(contentHash.prefix(8)): \(error)", category: .cache)
                 return false
             }
         }
+        
+        AppLogger.shared.info("🔍 SYNC_CHECK: All chunks available in sync - returning true", category: .sync)
         
         return true
     }
@@ -313,19 +394,78 @@ final class SpeechService: NSObject, ObservableObject {
         } else {
             chunkDurations = []
         }
-        // Prepare downloads for missing chunks
-        pendingDownloads = zip(parts, urls).filter { (_, url) in !FileManager.default.fileExists(atPath: url.path) }
-        downloadedChunksCount = 0
-        log("OpenAI chunks: total=\(chunksTotalCount), toDownload=\(pendingDownloads.count)")
-        currentDownloadExpectedBytes = 0
-        currentDownloadWrittenBytes = 0
+        // First, try to download missing chunks from iCloud before falling back to OpenAI
+        let missingUrls = zip(parts, urls).filter { (_, url) in !FileManager.default.fileExists(atPath: url.path) }
+        
+        if !missingUrls.isEmpty && iCloudSyncManager.shared.iCloudAvailable {
+            AppLogger.shared.info("🎵 PLAYBACK: Found \(missingUrls.count) missing chunks, attempting to download from iCloud first...", category: .speech)
+            AppLogger.shared.info("🎵 PLAYBACK: iCloud available: \(iCloudSyncManager.shared.iCloudAvailable)", category: .speech)
+            
+            Task {
+                var stillMissingAfterSync: [(String, URL)] = []
+                
+                for (part, url) in missingUrls {
+                    let contentHash = TTSAudioFile.contentHash(for: part, model: config.model, voice: config.voice, format: config.format)
+                    
+                    AppLogger.shared.info("🔍 PLAYBACK: Attempting to download chunk from iCloud - hash: \(contentHash.prefix(8)), expectedURL: \(url.lastPathComponent)", category: .speech)
+                    
+                    do {
+                        // Try to download this chunk from iCloud
+                        if let downloadedURL = try await iCloudSyncManager.shared.downloadAudioFileFromiCloud(contentHash: contentHash) {
+                            AppLogger.shared.info("✅ PLAYBACK: Successfully downloaded chunk from iCloud: \(contentHash.prefix(8)) -> \(downloadedURL.path)", category: .speech)
+                            
+                            // Copy from downloaded location to expected cache location if needed
+                            if downloadedURL != url {
+                                AppLogger.shared.info("📋 PLAYBACK: Copying from iCloud cache \(downloadedURL.lastPathComponent) to speech cache \(url.lastPathComponent)", category: .speech)
+                                try FileManager.default.copyItem(at: downloadedURL, to: url)
+                                AppLogger.shared.info("✅ PLAYBACK: Copy completed successfully", category: .speech)
+                            } else {
+                                AppLogger.shared.info("✅ PLAYBACK: File already in correct location", category: .speech)
+                            }
+                        } else {
+                            AppLogger.shared.warning("❌ PLAYBACK: downloadAudioFileFromiCloud returned nil for hash: \(contentHash.prefix(8))", category: .speech)
+                            AppLogger.shared.info("Will generate via OpenAI instead", category: .speech)
+                            stillMissingAfterSync.append((part, url))
+                        }
+                    } catch {
+                        AppLogger.shared.error("💥 PLAYBACK: Exception downloading from iCloud - hash: \(contentHash.prefix(8)), error: \(error.localizedDescription)", category: .speech)
+                        stillMissingAfterSync.append((part, url))
+                    }
+                }
+                
+                await MainActor.run {
+                    // Update pendingDownloads with only the chunks we still need to generate
+                    self.pendingDownloads = stillMissingAfterSync
+                    self.downloadedChunksCount = 0
+                    self.log("After iCloud check: total=\(self.chunksTotalCount), stillNeedToGenerate=\(self.pendingDownloads.count)")
+                    
+                    self.currentDownloadExpectedBytes = 0
+                    self.currentDownloadWrittenBytes = 0
+                    self.continueWithPlayback()
+                }
+            }
+        } else {
+            // No missing chunks or iCloud unavailable, prepare for immediate OpenAI generation
+            pendingDownloads = missingUrls
+            downloadedChunksCount = 0
+            log("OpenAI chunks: total=\(chunksTotalCount), toDownload=\(pendingDownloads.count)")
+            currentDownloadExpectedBytes = 0
+            currentDownloadWrittenBytes = 0
+            continueWithPlayback()
+        }
+    }
+    
+    @MainActor
+    private func continueWithPlayback() {
+        guard let config = loadOpenAIConfig() else { return }
+        
         progressTimer?.invalidate()
         progressTimer = nil
         audioPlayer?.stop()
         audioPlayer = nil
 
-        let cachedCount = urls.count - pendingDownloads.count
-        AppLogger.shared.info("Cache status: \(cachedCount)/\(urls.count) chunks cached", category: .cache)
+        let cachedCount = currentPlaylist.count - pendingDownloads.count
+        AppLogger.shared.info("Cache status: \(cachedCount)/\(currentPlaylist.count) chunks cached", category: .cache)
 
         if pendingDownloads.isEmpty {
             // All cached, start playing immediately
@@ -430,14 +570,14 @@ final class SpeechService: NSObject, ObservableObject {
         RunLoop.main.add(progressTimer!, forMode: .common)
     }
 
-    private struct OpenAIConfig {
+    struct OpenAIConfig {
         let apiKey: String
         let model: String
         let voice: String
         let format: String
     }
 
-    private func loadOpenAIConfig() -> OpenAIConfig? {
+    func loadOpenAIConfig() -> OpenAIConfig? {
         // Priority: UserDefaults -> Info.plist -> env var
         let defaultsKey = UserDefaults.standard.string(forKey: "OPENAI_API_KEY")
         let infoKey = Bundle.main.infoDictionary?["OPENAI_API_KEY"] as? String
@@ -479,7 +619,7 @@ final class SpeechService: NSObject, ObservableObject {
         task.resume()
     }
 
-    private func cacheKey(text: String, model: String, voice: String, format: String) -> String {
+    func cacheKey(text: String, model: String, voice: String, format: String) -> String {
         let combined = [model, voice, format, text].joined(separator: "|")
         let hash = SHA256.hash(data: Data(combined.utf8))
         return hash.compactMap { String(format: "%02x", $0) }.joined()
@@ -489,18 +629,24 @@ final class SpeechService: NSObject, ObservableObject {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = base.appendingPathComponent("tts-cache", isDirectory: true)
         if !FileManager.default.fileExists(atPath: dir.path) {
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                AppLogger.shared.info("Created TTS cache directory at: \(dir.path)", category: .cache)
+            } catch {
+                AppLogger.shared.error("Failed to create TTS cache directory: \(error)", category: .cache)
+                // Still return the dir so we can attempt to create it later
+            }
         }
         return dir
     }
 
-    private func ensureCacheFileURL(forKey key: String, format: String) -> URL {
+    func ensureCacheFileURL(forKey key: String, format: String) -> URL {
         return cacheDirectory().appendingPathComponent("\(key).\(format)")
     }
 
     // MARK: - Chunking & sequential download
 
-    private func chunkText(_ text: String, maxChunkLength: Int = 3800) -> [String] {
+    func chunkText(_ text: String, maxChunkLength: Int = 3800) -> [String] {
         guard text.count > maxChunkLength else { return [text] }
         var result: [String] = []
         var current = ""
@@ -744,95 +890,115 @@ final class SpeechService: NSObject, ObservableObject {
 
 extension SpeechService: URLSessionDownloadDelegate, AVAudioPlayerDelegate {
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        Task { @MainActor in
-            self.currentDownloadExpectedBytes = totalBytesExpectedToWrite
-            self.currentDownloadWrittenBytes = totalBytesWritten
-            let chunksCompleted = Double(self.downloadedChunksCount)
-            let chunksTotal = max(Double(self.chunksTotalCount), 1)
+        // Since we're using OperationQueue.main, we're already on the main thread
+        MainActor.assumeIsolated {
+            currentDownloadExpectedBytes = totalBytesExpectedToWrite
+            currentDownloadWrittenBytes = totalBytesWritten
+            let chunksCompleted = Double(downloadedChunksCount)
+            let chunksTotal = max(Double(chunksTotalCount), 1)
             let intra = totalBytesExpectedToWrite > 0 ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) : 0
             let overall = min((chunksCompleted + intra) / chunksTotal, 0.999)
-            self.state = .downloading(progress: overall)
+            state = .downloading(progress: overall)
         }
     }
 
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        Task { @MainActor in
-            guard let destination = self.downloadDestinations[downloadTask.taskIdentifier] else {
+        // Since we're using OperationQueue.main, we're already on the main thread
+        // Don't wrap in Task to avoid race conditions with temporary file cleanup
+        MainActor.assumeIsolated {
+            guard let destination = downloadDestinations[downloadTask.taskIdentifier] else {
                 print("No destination for downloaded file (task \(downloadTask.taskIdentifier))")
-                self.log("Error: Missing destination for task \(downloadTask.taskIdentifier)")
-                self.state = .idle
+                log("Error: Missing destination for task \(downloadTask.taskIdentifier)")
+                state = .idle
                 return
             }
             
             do {
-                // Ensure directory exists
-                let dir = destination.deletingLastPathComponent()
-                if !FileManager.default.fileExists(atPath: dir.path) {
-                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                }
-                if FileManager.default.fileExists(atPath: destination.path) {
-                    try FileManager.default.removeItem(at: destination)
-                }
-                try FileManager.default.moveItem(at: location, to: destination)
-                
-                // Check if this is a preload download
-                if let completion = self.preloadCompletions[downloadTask.taskIdentifier] {
-                    // This is a preload download - call completion and clean up
-                    completion(.success(()))
-                    self.preloadCompletions.removeValue(forKey: downloadTask.taskIdentifier)
-                } else {
-                    // This is a regular speech download - continue with existing logic
-                    self.downloadedChunksCount += 1
-                    // If all downloads complete, start playback; otherwise continue downloading next
-                    if self.downloadedChunksCount >= self.chunksTotalCount || self.pendingDownloads.isEmpty {
-                        if self.chunkDurations.isEmpty { self.computeChunkDurations() }
-                        self.playChunk(at: self.initialChunkIndex ?? 0)
-                    } else if let config = self.loadOpenAIConfig() {
-                        self.startNextDownload(config: config)
-                    }
-                }
-            } catch {
-                print("Failed moving downloaded audio: \(error)")
-                
-                // Handle error for both types of downloads
-                if let completion = self.preloadCompletions[downloadTask.taskIdentifier] {
-                    completion(.failure(error))
-                    self.preloadCompletions.removeValue(forKey: downloadTask.taskIdentifier)
-                } else {
-                    self.state = .idle
-                    self.log("Error: Failed moving download: \(error.localizedDescription)")
-                }
+            // Ensure directory exists
+            let dir = destination.deletingLastPathComponent()
+            if !FileManager.default.fileExists(atPath: dir.path) {
+                AppLogger.shared.info("Creating cache directory: \(dir.path)", category: .cache)
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             }
             
-            self.downloadDestinations.removeValue(forKey: downloadTask.taskIdentifier)
+            // Check if source file exists
+            if !FileManager.default.fileExists(atPath: location.path) {
+                throw NSError(domain: "SpeechService", code: 404, userInfo: [NSLocalizedDescriptionKey: "Downloaded file not found at \(location.path)"])
+            }
+            
+            // Remove existing destination if it exists
+            if FileManager.default.fileExists(atPath: destination.path) {
+                AppLogger.shared.info("Removing existing file at destination: \(destination.path)", category: .cache)
+                try FileManager.default.removeItem(at: destination)
+            }
+            
+            AppLogger.shared.info("Moving downloaded file from \(location.path) to \(destination.path)", category: .cache)
+            try FileManager.default.moveItem(at: location, to: destination)
+            AppLogger.shared.info("Successfully moved downloaded file", category: .cache)
+            
+            // Check if this is a preload download
+            if let completion = preloadCompletions[downloadTask.taskIdentifier] {
+                // This is a preload download - call completion and clean up
+                completion(.success(()))
+                preloadCompletions.removeValue(forKey: downloadTask.taskIdentifier)
+            } else {
+                // This is a regular speech download - continue with existing logic
+                downloadedChunksCount += 1
+                // If all downloads complete, start playback; otherwise continue downloading next
+                if downloadedChunksCount >= chunksTotalCount || pendingDownloads.isEmpty {
+                    if chunkDurations.isEmpty { computeChunkDurations() }
+                    playChunk(at: initialChunkIndex ?? 0)
+                } else if let config = loadOpenAIConfig() {
+                    startNextDownload(config: config)
+                }
+            }
+        } catch {
+            AppLogger.shared.error("Failed moving downloaded audio: \(error.localizedDescription)", category: .download)
+            AppLogger.shared.error("Source path: \(location.path), Destination: \(destination.path)", category: .download)
+            
+            // Handle error for both types of downloads
+            if let completion = preloadCompletions[downloadTask.taskIdentifier] {
+                completion(.failure(error))
+                preloadCompletions.removeValue(forKey: downloadTask.taskIdentifier)
+            } else {
+                state = .idle
+                log("Error: Failed moving download: \(error.localizedDescription)")
+            }
+        }
+        
+        downloadDestinations.removeValue(forKey: downloadTask.taskIdentifier)
         }
     }
 
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        Task { @MainActor in
+        // Since we're using OperationQueue.main, we're already on the main thread
+        MainActor.assumeIsolated {
             if let error {
-                print("Download failed: \(error)")
+                AppLogger.shared.error("Download task completed with error: \(error.localizedDescription)", category: .download)
                 
                 // Handle error for preload downloads
-                if let completion = self.preloadCompletions[task.taskIdentifier] {
+                if let completion = preloadCompletions[task.taskIdentifier] {
                     completion(.failure(error))
-                    self.preloadCompletions.removeValue(forKey: task.taskIdentifier)
+                    preloadCompletions.removeValue(forKey: task.taskIdentifier)
                 } else {
                     // Handle error for regular speech downloads
-                    self.state = .idle
+                    state = .idle
                 }
                 
                 // Clean up
-                self.downloadDestinations.removeValue(forKey: task.taskIdentifier)
+                downloadDestinations.removeValue(forKey: task.taskIdentifier)
             }
         }
     }
     
     nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         // Call the completion handler to inform the system that background processing is complete
+        // This is only relevant for background sessions on iOS
+        #if !os(macOS)
         if let identifier = session.configuration.identifier {
             BackgroundSessionManager.shared.callCompletionHandler(for: identifier)
         }
+        #endif
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {

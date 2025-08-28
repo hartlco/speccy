@@ -20,7 +20,7 @@ struct speccyApp: App {
         let modelConfiguration = ModelConfiguration(
             schema: schema, 
             isStoredInMemoryOnly: false, 
-            cloudKitDatabase: .private("iCloud.com.speccy.documents")
+            cloudKitDatabase: .private("iCloud.co.hartl.speccy")
         )
         
         do {
