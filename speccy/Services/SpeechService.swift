@@ -473,10 +473,30 @@ final class SpeechService: NSObject, ObservableObject {
             AppLogger.shared.info("All chunks cached. Starting playback", category: .playback)
             playChunk(at: initialChunkIndex ?? 0)
         } else {
-            // Download sequentially, then play
-            state = .downloading(progress: 0)
-            AppLogger.shared.info("Starting download of \(pendingDownloads.count) missing chunks", category: .download)
-            startNextDownload(config: config)
+            // Need to download missing chunks - ask for user consent first
+            let totalText = pendingDownloads.map { $0.0 }.joined(separator: " ")
+            let documentTitle = nowPlayingTitle ?? "Audio"
+            
+            AppLogger.shared.info("Requesting user consent for TTS generation of \(pendingDownloads.count) missing chunks", category: .speech)
+            
+            TTSConsentManager.shared.requestTTSGeneration(
+                text: totalText,
+                title: documentTitle,
+                onApprove: { [weak self] in
+                    AppLogger.shared.info("User approved TTS generation, starting downloads", category: .speech)
+                    Task { @MainActor in
+                        self?.state = .downloading(progress: 0)
+                        self?.startNextDownload(config: config)
+                    }
+                },
+                onDecline: { [weak self] in
+                    AppLogger.shared.info("User declined TTS generation", category: .speech)
+                    Task { @MainActor in
+                        self?.state = .idle
+                        self?.log("TTS generation declined by user")
+                    }
+                }
+            )
         }
     }
 

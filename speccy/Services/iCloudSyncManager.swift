@@ -162,17 +162,21 @@ class iCloudSyncManager: ObservableObject {
                     model: model,
                     voice: voice,
                     format: format,
-                    iCloudURL: iCloudURL
+                    iCloudURL: iCloudURL,
+                    syncStatus: .synced  // Only set to synced after successful upload
                 )
+                audioFile.lastSyncAttempt = Date()
                 
                 modelContext.insert(audioFile)
                 try modelContext.save()
                 AppLogger.shared.info("Database record created successfully", category: .sync)
             } else {
-                // Update existing record with iCloud URL if needed
-                if let existingFile = existingFiles.first, existingFile.iCloudURL != iCloudURL {
+                // Update existing record with iCloud URL and sync status
+                if let existingFile = existingFiles.first {
                     AppLogger.shared.info("Updating existing database record with new iCloud URL", category: .sync)
                     existingFile.iCloudURL = iCloudURL
+                    existingFile.syncStatus = .synced
+                    existingFile.lastSyncAttempt = Date()
                     try modelContext.save()
                 } else {
                     AppLogger.shared.info("Database record already up to date", category: .sync)
@@ -185,6 +189,14 @@ class iCloudSyncManager: ObservableObject {
         } catch {
             syncStatus = .error(error.localizedDescription)
             AppLogger.shared.error("Failed to sync audio file to iCloud: \(error)", category: .sync)
+            
+            // Mark any existing record as local only if upload failed
+            if let existingFile = try? modelContext.fetch(FetchDescriptor<TTSAudioFile>(predicate: #Predicate { $0.contentHash == contentHash })).first {
+                existingFile.syncStatus = .localOnly
+                existingFile.lastSyncAttempt = Date()
+                try? modelContext.save()
+            }
+            
             throw error
         }
     }
@@ -253,7 +265,7 @@ class iCloudSyncManager: ObservableObject {
         }
         
         AppLogger.shared.info("Starting download from iCloud to local cache...", category: .sync)
-        let downloadedURL = try await downloadFile(from: finalURL, to: localCacheURL)
+        let downloadedURL = try await downloadFile(from: finalURL, to: localCacheURL, contentHash: contentHash)
         AppLogger.shared.info("Successfully downloaded audio file from iCloud", category: .sync)
         return downloadedURL
     }
@@ -353,7 +365,7 @@ class iCloudSyncManager: ObservableObject {
         return destinationURL
     }
     
-    private func downloadFile(from iCloudURL: URL, to localURL: URL) async throws -> URL {
+    private func downloadFile(from iCloudURL: URL, to localURL: URL, contentHash: String) async throws -> URL {
         AppLogger.shared.info("Starting iCloud file download from: \(iCloudURL.path)", category: .sync)
         
         // Ensure local directory exists
@@ -363,68 +375,199 @@ class iCloudSyncManager: ObservableObject {
             try FileManager.default.createDirectory(at: localDir, withIntermediateDirectories: true)
         }
         
-        // Use file coordination for safe iCloud access
-        let fileCoordinator = NSFileCoordinator()
-        var coordinatorError: NSError?
-        var downloadError: Error?
+        // Try a direct approach: trigger download and then use URLSession to fetch
+        AppLogger.shared.info("Attempting to trigger iCloud download", category: .sync)
         
-        fileCoordinator.coordinate(readingItemAt: iCloudURL, options: [], error: &coordinatorError) { (readingURL) in
-            do {
-                AppLogger.shared.info("File coordinator - checking file accessibility", category: .sync)
-                
-                // Check if file needs to be downloaded from iCloud
-                var isDownloaded: AnyObject?
-                try (readingURL as NSURL).getResourceValue(&isDownloaded, forKey: .ubiquitousItemDownloadingStatusKey)
-                
-                AppLogger.shared.info("Checking if iCloud file needs to be downloaded...", category: .sync)
-                
-                // Simple approach: if the file doesn't exist locally, try to download it
-                if !FileManager.default.fileExists(atPath: readingURL.path) {
-                    AppLogger.shared.info("File not available locally, starting iCloud download...", category: .sync)
-                    try FileManager.default.startDownloadingUbiquitousItem(at: readingURL)
-                    
-                    // Wait for download to complete (with timeout)
-                    var attempts = 0
-                    let maxAttempts = 50 // 5 seconds
-                    
-                    AppLogger.shared.info("Waiting for iCloud download to complete...", category: .sync)
-                    while attempts < maxAttempts && !FileManager.default.fileExists(atPath: readingURL.path) {
-                        Thread.sleep(forTimeInterval: 0.1)
-                        attempts += 1
-                    }
-                    
-                    if attempts >= maxAttempts {
-                        AppLogger.shared.error("iCloud download timed out after 5 seconds", category: .sync)
-                        throw SyncError.downloadFailed
-                    }
-                    
-                    AppLogger.shared.info("iCloud download completed after \(attempts * 100)ms", category: .sync)
-                } else {
-                    AppLogger.shared.info("File already available locally in iCloud Documents", category: .sync)
-                }
-                
-                // Copy to local cache
-                AppLogger.shared.info("Copying from iCloud Documents to local cache", category: .sync)
-                try FileManager.default.copyItem(at: readingURL, to: localURL)
-                AppLogger.shared.info("File successfully copied to local cache", category: .sync)
-            } catch {
-                AppLogger.shared.error("File coordinator error during download: \(error.localizedDescription)", category: .sync)
-                downloadError = error
+        // Check if this is a cross-device sync issue first
+        do {
+            var isUbiquitous: AnyObject?
+            try (iCloudURL as NSURL).getResourceValue(&isUbiquitous, forKey: .isUbiquitousItemKey)
+            
+            if let isUbiq = isUbiquitous as? Bool, !isUbiq {
+                AppLogger.shared.error("File is not a ubiquitous item - may not be properly synced to iCloud", category: .sync)
+                throw SyncError.crossDeviceSyncLimitation
+            }
+        } catch {
+            AppLogger.shared.warning("Could not check ubiquitous status: \(error.localizedDescription)", category: .sync)
+        }
+        
+        // Check if file exists at all before trying to download
+        if !FileManager.default.fileExists(atPath: iCloudURL.path) {
+            AppLogger.shared.error("iCloud file does not exist at path - may be cross-device sync issue", category: .sync)
+            
+            // Update sync status to indicate download failure in database if record exists
+            if let existingFile = try? modelContext?.fetch(FetchDescriptor<TTSAudioFile>(predicate: #Predicate { $0.contentHash == contentHash })).first {
+                existingFile.syncStatus = .downloadFailed
+                existingFile.lastSyncAttempt = Date()
+                try? modelContext?.save()
+            }
+            
+            throw SyncError.crossDeviceSyncLimitation
+        }
+        
+        // First trigger the iCloud download
+        do {
+            try FileManager.default.startDownloadingUbiquitousItem(at: iCloudURL)
+        } catch {
+            AppLogger.shared.warning("Failed to trigger iCloud download: \(error.localizedDescription)", category: .sync)
+        }
+        
+        // Wait longer for cross-device files
+        try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+        
+        // Try the security-scoped resource approach for iCloud file access
+        AppLogger.shared.info("Attempting iCloud file access with security-scoped resource", category: .sync)
+        
+        // Start accessing the security-scoped resource
+        let accessGranted = iCloudURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessGranted {
+                iCloudURL.stopAccessingSecurityScopedResource()
             }
         }
         
-        // Check for coordination errors
-        if let coordinatorError = coordinatorError {
-            AppLogger.shared.error("File coordinator failed: \(coordinatorError.localizedDescription)", category: .sync)
-            throw coordinatorError
+        if accessGranted {
+            AppLogger.shared.info("Successfully gained security-scoped access to iCloud file", category: .sync)
+        } else {
+            AppLogger.shared.info("Security-scoped access not granted, but continuing with file access attempt", category: .sync)
         }
         
-        // Check for download errors
-        if let downloadError = downloadError {
-            throw downloadError
+        // Wait for the file to be available locally (with timeout)
+        var attempts = 0
+        let maxAttempts = 100 // 10 seconds
+        
+        while attempts < maxAttempts {
+            // Check download status first
+            var downloadStatusValue: AnyObject?
+            var isDownloadingValue: AnyObject?
+            
+            do {
+                try (iCloudURL as NSURL).getResourceValue(&downloadStatusValue, forKey: .ubiquitousItemDownloadingStatusKey)
+                try (iCloudURL as NSURL).getResourceValue(&isDownloadingValue, forKey: .ubiquitousItemIsDownloadingKey)
+                
+                let status = downloadStatusValue as? String ?? "unknown"
+                let isDownloading = (isDownloadingValue as? Bool) ?? false
+                
+                AppLogger.shared.debug("iCloud status: \(status), isDownloading: \(isDownloading)", category: .sync)
+                
+                // If file is downloaded and current, try to access it
+                if status == "NSURLUbiquitousItemDownloadingStatusCurrent" || 
+                   status == "NSURLUbiquitousItemDownloadingStatusDownloaded" {
+                    
+                    if FileManager.default.fileExists(atPath: iCloudURL.path) && FileManager.default.isReadableFile(atPath: iCloudURL.path) {
+                        do {
+                            // Try to read a small portion to verify access
+                            let data = try Data(contentsOf: iCloudURL, options: [.mappedIfSafe])
+                            if !data.isEmpty {
+                                AppLogger.shared.info("File is accessible with status: \(status)", category: .sync)
+                                break
+                            }
+                        } catch {
+                            AppLogger.shared.debug("File exists but not accessible: \(error.localizedDescription)", category: .sync)
+                        }
+                    }
+                }
+                
+            } catch {
+                AppLogger.shared.debug("Could not get download status: \(error.localizedDescription)", category: .sync)
+            }
+            
+            // If we've tried for a while with unknown status, it might be that this file
+            // simply isn't available in iCloud on this device, so break out early
+            if attempts > 20 && (downloadStatusValue as? String) == "unknown" {
+                AppLogger.shared.warning("File status remains unknown after 2 seconds - cross-device sync issue detected", category: .sync)
+                
+                // Update sync status to indicate this is a cross-device problem
+                if let existingFile = try? modelContext?.fetch(FetchDescriptor<TTSAudioFile>(predicate: #Predicate { $0.contentHash == contentHash })).first {
+                    existingFile.syncStatus = .downloadFailed
+                    existingFile.lastSyncAttempt = Date()
+                    try? modelContext?.save()
+                }
+                
+                break
+            }
+            
+            try await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+            attempts += 1
         }
         
-        return localURL
+        // Check if we should attempt the copy anyway or give up gracefully
+        let shouldTryAnyway = FileManager.default.fileExists(atPath: iCloudURL.path)
+        
+        if attempts >= maxAttempts && !shouldTryAnyway {
+            AppLogger.shared.warning("iCloud file not accessible after timeout - cross-device sync limitation", category: .sync)
+            
+            // Update sync status to indicate download failure in database if record exists
+            if let existingFile = try? modelContext?.fetch(FetchDescriptor<TTSAudioFile>(predicate: #Predicate { $0.contentHash == contentHash })).first {
+                existingFile.syncStatus = .downloadFailed
+                existingFile.lastSyncAttempt = Date()
+                try? modelContext?.save()
+            }
+            
+            throw SyncError.downloadFailed
+        }
+        
+        if !shouldTryAnyway {
+            AppLogger.shared.warning("iCloud file does not exist locally - cross-device sync limitation", category: .sync)
+            
+            // Update sync status to indicate download failure in database if record exists
+            if let existingFile = try? modelContext?.fetch(FetchDescriptor<TTSAudioFile>(predicate: #Predicate { $0.contentHash == contentHash })).first {
+                existingFile.syncStatus = .downloadFailed
+                existingFile.lastSyncAttempt = Date()
+                try? modelContext?.save()
+            }
+            
+            throw SyncError.downloadFailed
+        }
+        
+        // Now try to copy the file
+        do {
+            // Final verification before copy
+            AppLogger.shared.info("Final file verification before copy - exists: \(FileManager.default.fileExists(atPath: iCloudURL.path)), readable: \(FileManager.default.isReadableFile(atPath: iCloudURL.path))", category: .sync)
+            
+            // Get file attributes for debugging
+            if let attributes = try? FileManager.default.attributesOfItem(atPath: iCloudURL.path) {
+                AppLogger.shared.info("iCloud file attributes: size=\(attributes[.size] ?? "unknown"), type=\(attributes[.type] ?? "unknown")", category: .sync)
+            }
+            
+            // Remove existing file if present
+            if FileManager.default.fileExists(atPath: localURL.path) {
+                try FileManager.default.removeItem(at: localURL)
+                AppLogger.shared.info("Removed existing local file", category: .sync)
+            }
+            
+            // Copy directly 
+            try FileManager.default.copyItem(at: iCloudURL, to: localURL)
+            AppLogger.shared.info("Successfully copied file from iCloud (access granted: \(accessGranted))", category: .sync)
+            
+            // Update sync status to indicate successful download
+            if let existingFile = try? modelContext?.fetch(FetchDescriptor<TTSAudioFile>(predicate: #Predicate { $0.contentHash == contentHash })).first {
+                // Don't change status if it's already synced, but reset download failed status
+                if existingFile.syncStatus == .downloadFailed {
+                    existingFile.syncStatus = .synced
+                }
+                existingFile.lastSyncAttempt = Date()
+                try? modelContext?.save()
+            }
+            
+            return localURL
+            
+        } catch {
+            AppLogger.shared.error("File copy failed - iCloudURL: \(iCloudURL.path), localURL: \(localURL.path), error: \(error.localizedDescription)", category: .sync)
+            
+            // Additional debugging info
+            AppLogger.shared.error("iCloud file exists: \(FileManager.default.fileExists(atPath: iCloudURL.path)), readable: \(FileManager.default.isReadableFile(atPath: iCloudURL.path))", category: .sync)
+            AppLogger.shared.error("Local directory exists: \(FileManager.default.fileExists(atPath: localURL.deletingLastPathComponent().path))", category: .sync)
+            
+            // Update sync status to indicate download failure in database if record exists
+            if let existingFile = try? modelContext?.fetch(FetchDescriptor<TTSAudioFile>(predicate: #Predicate { $0.contentHash == contentHash })).first {
+                existingFile.syncStatus = .downloadFailed
+                existingFile.lastSyncAttempt = Date()
+                try? modelContext?.save()
+            }
+            
+            throw error
+        }
     }
     
     // MARK: - Utilities
@@ -474,17 +617,20 @@ enum SyncError: Error, LocalizedError {
     case notConfigured
     case uploadFailed
     case downloadFailed
+    case crossDeviceSyncLimitation
     
     var errorDescription: String? {
         switch self {
         case .iCloudUnavailable:
             return "iCloud is not available"
         case .notConfigured:
-            return "Sync manager not configured"
+            return "Sync manager not properly configured"
         case .uploadFailed:
-            return "Failed to upload file"
+            return "Failed to upload file to iCloud"
         case .downloadFailed:
-            return "Failed to download file"
+            return "Failed to download file from iCloud"
+        case .crossDeviceSyncLimitation:
+            return "File created on different device - iCloud cross-device sync limitation"
         }
     }
 }
