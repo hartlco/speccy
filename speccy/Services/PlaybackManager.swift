@@ -21,7 +21,7 @@ class PlaybackManager: ObservableObject {
     @Published private(set) var progress: Double = 0.0
     @Published private(set) var currentTitle: String = ""
     
-    private var speechService: SpeechService?
+    private var speechService: SpeechServiceBackend?
     private var progressCancellable: AnyCancellable?
     private var speedChangeCancellable: AnyCancellable?
     
@@ -48,7 +48,7 @@ class PlaybackManager: ObservableObject {
         text: String,
         languageCode: String? = nil,
         resumeKey: String,
-        speechService: SpeechService
+        speechService: SpeechServiceBackend
     ) {
         AppLogger.shared.info("Starting playback session for '\(title)'", category: .playback)
         
@@ -153,7 +153,7 @@ class PlaybackManager: ObservableObject {
         progressCancellable = nil
     }
     
-    private func updateFromSpeechState(_ state: SpeechService.State) {
+    private func updateFromSpeechState(_ state: SpeechServiceBackend.State) {
         switch state {
         case .idle:
             isPlaying = false

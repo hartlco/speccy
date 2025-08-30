@@ -21,8 +21,8 @@ class DownloadManager: ObservableObject {
         case notSynced
         case syncing
         case synced
-        case availableInCloud // File exists in iCloud but not locally
-        case iCloudUnavailable // iCloud is not available (not signed in, container issues, etc.)
+        case availableInCloud
+        case iCloudUnavailable
         case syncFailed(Error)
     }
     
@@ -46,11 +46,11 @@ class DownloadManager: ObservableObject {
     }
     
     @Published private(set) var downloads: [DownloadItem] = []
-    private var speechService: SpeechService
+    private var speechService: SpeechServiceBackend
     private var activeDownloads: [String: Task<Void, Never>] = [:]
     
     private init() {
-        self.speechService = SpeechService.shared
+        self.speechService = SpeechServiceBackend.shared
         
         // Set up background task handling for downloads
         setupBackgroundTaskSupport()
@@ -225,7 +225,7 @@ class DownloadManager: ObservableObject {
                 return
             }
             
-            guard let config = speechService.loadOpenAIConfig() else {
+            guard let config = speechService.getOpenAIConfig() else {
                 await MainActor.run {
                     self.downloads[index].syncState = .syncFailed(NSError(domain: "DownloadManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Missing OpenAI config"]))
                 }
@@ -233,12 +233,12 @@ class DownloadManager: ObservableObject {
             }
             
             do {
-                let parts = speechService.chunkText(text)
+                let parts = speechService.splitTextIntoChunks(text)
                 
                 // Sync each chunk to iCloud
                 for part in parts {
-                    let key = speechService.cacheKey(text: part, model: config.model, voice: config.voice, format: config.format)
-                    let localURL = speechService.ensureCacheFileURL(forKey: key, format: config.format)
+                    let key = speechService.generateCacheKey(text: part, model: config.model, voice: config.voice, format: config.format)
+                    let localURL = speechService.getCacheFileURL(forKey: key, format: config.format)
                     
                     if FileManager.default.fileExists(atPath: localURL.path) {
                         let contentHash = TTSAudioFile.contentHash(for: part, model: config.model, voice: config.voice, format: config.format)

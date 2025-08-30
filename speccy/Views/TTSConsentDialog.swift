@@ -2,7 +2,7 @@ import SwiftUI
 
 struct TTSConsentDialog: View {
     @ObservedObject private var consentManager = TTSConsentManager.shared
-    @ObservedObject private var speechService = SpeechService.shared
+    @ObservedObject private var speechService = SpeechServiceBackend.shared
     
     var body: some View {
         VStack(spacing: 20) {
@@ -57,18 +57,18 @@ struct TTSConsentDialog: View {
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
             
-            // CloudKit check info
+            // Backend info
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Image(systemName: "icloud")
+                    Image(systemName: "server.rack")
                         .foregroundStyle(.blue)
-                    Text("Checking iCloud for existing audio...")
+                    Text("Using backend service...")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
                 
-                Text("We'll first check if this audio is already available on your other devices before generating new audio.")
+                Text("Audio will be generated via our backend service and cached locally for 7 days.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }

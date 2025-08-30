@@ -16,11 +16,10 @@ struct speccyApp: App {
     #endif
     
     var sharedModelContainer: ModelContainer = {
-        let schema = Schema([SpeechDocument.self, TTSAudioFile.self])
+        let schema = Schema([SpeechDocument.self])
         let modelConfiguration = ModelConfiguration(
             schema: schema, 
-            isStoredInMemoryOnly: false, 
-            cloudKitDatabase: .private("iCloud.co.hartl.speccy")
+            isStoredInMemoryOnly: false
         )
         
         do {
@@ -41,7 +40,7 @@ struct speccyApp: App {
             ContentView()
                 .onAppear {
                     // Configure services once the container is ready
-                    SpeechService.shared.configure(with: sharedModelContainer.mainContext)
+                    SpeechServiceBackend.shared.configure(with: sharedModelContainer.mainContext)
                 }
         }
         .modelContainer(sharedModelContainer)

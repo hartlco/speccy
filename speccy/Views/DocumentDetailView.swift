@@ -3,9 +3,9 @@ import SwiftUI
 
 struct DocumentDetailView: View {
     @Environment(\.modelContext) private var modelContext
-    @ObservedObject private var downloadManager = DownloadManager.shared
+    @ObservedObject private var downloadManager = DownloadManagerBackend.shared
     @ObservedObject private var playbackManager = PlaybackManager.shared
-    @ObservedObject private var speechService = SpeechService.shared
+    @ObservedObject private var speechService = SpeechServiceBackend.shared
     @ObservedObject private var consentManager = TTSConsentManager.shared
     
     @State var document: SpeechDocument
@@ -179,12 +179,12 @@ struct DocumentDetailView: View {
         }
     }
     
-    private var currentDownloadState: DownloadManager.DownloadState? {
+    private var currentDownloadState: DownloadManagerBackend.DownloadState? {
         downloadManager.getDownloadState(for: document.id.uuidString)
     }
     
-    private var currentSyncState: DownloadManager.SyncState? {
-        downloadManager.getSyncState(for: document.id.uuidString)
+    private var currentSyncState: DownloadManagerBackend.SyncState? {
+        return downloadManager.getSyncState(for: document.id.uuidString)
     }
     
     private var canPlay: Bool {
@@ -338,9 +338,9 @@ struct DocumentDetailView: View {
     }
     
     @ViewBuilder
-    private func syncStatusView(syncState: DownloadManager.SyncState) -> some View {
+    private func syncStatusView(syncState: DownloadManagerBackend.SyncState?) -> some View {
         switch syncState {
-        case .notSynced:
+        case .some(.notSynced):
             HStack {
                 Image(systemName: "icloud.slash")
                     .foregroundStyle(.secondary)
@@ -354,7 +354,7 @@ struct DocumentDetailView: View {
             .background(Color.secondary.opacity(0.1))
             .clipShape(RoundedRectangle(cornerRadius: 6))
             
-        case .syncing:
+        case .some(.syncing):
             HStack {
                 Image(systemName: "icloud.and.arrow.up")
                     .foregroundStyle(.blue)
@@ -369,7 +369,7 @@ struct DocumentDetailView: View {
             .background(Color.blue.opacity(0.1))
             .clipShape(RoundedRectangle(cornerRadius: 6))
             
-        case .synced:
+        case .some(.synced):
             HStack {
                 Image(systemName: "icloud.and.arrow.up.fill")
                     .foregroundStyle(.green)
@@ -383,36 +383,9 @@ struct DocumentDetailView: View {
             .background(Color.green.opacity(0.1))
             .clipShape(RoundedRectangle(cornerRadius: 6))
             
-        case .availableInCloud:
-            HStack {
-                Image(systemName: "icloud.and.arrow.down")
-                    .foregroundStyle(.orange)
-                Text("Available in iCloud")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                Spacer()
-                Button("Download") {
-                    Task {
-                        // Try to download from iCloud
-                        let isAvailableInSync = await speechService.isAudioAvailableInSync(for: document.plainText)
-                        if isAvailableInSync {
-                            // This should trigger a download from iCloud rather than generating new TTS
-                            await MainActor.run {
-                                downloadManager.updateSyncState(for: document.id.uuidString, to: .syncing)
-                                startDownload()
-                            }
-                        }
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-            .background(Color.orange.opacity(0.1))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+        // .availableInCloud case removed - not applicable with backend service
             
-        case .iCloudUnavailable:
+        case .some(.iCloudUnavailable):
             HStack {
                 Image(systemName: "exclamationmark.icloud")
                     .foregroundStyle(.orange)
@@ -433,7 +406,7 @@ struct DocumentDetailView: View {
             .background(Color.orange.opacity(0.1))
             .clipShape(RoundedRectangle(cornerRadius: 6))
             
-        case .syncFailed(let error):
+        case .some(.syncFailed(let error)):
             HStack {
                 Image(systemName: "icloud.slash.fill")
                     .foregroundStyle(.red)
@@ -453,6 +426,10 @@ struct DocumentDetailView: View {
             .padding(.vertical, 8)
             .background(Color.red.opacity(0.1))
             .clipShape(RoundedRectangle(cornerRadius: 6))
+        
+        case .none:
+            // No sync state available
+            EmptyView()
         }
     }
 }
