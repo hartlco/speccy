@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speccy - Text to Speech</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #333;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            padding: 2rem;
+            min-width: 400px;
+            max-width: 800px;
+            width: 90%;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        
+        .header h1 {
+            color: #667eea;
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .header p {
+            color: #666;
+            font-size: 1rem;
+        }
+        
+        .auth-form, .main-app {
+            display: none;
+        }
+        
+        .auth-form.active, .main-app.active {
+            display: block;
+        }
+        
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+            color: #444;
+        }
+        
+        .form-group input, .form-group textarea, .form-group select {
+            width: 100%;
+            padding: 0.75rem;
+            border: 2px solid #e1e5e9;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.2s;
+        }
+        
+        .form-group input:focus, .form-group textarea:focus, .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .form-group textarea {
+            resize: vertical;
+            min-height: 120px;
+        }
+        
+        .btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            width: 100%;
+        }
+        
+        .btn:hover {
+            background: #5a6fd8;
+        }
+        
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .btn-secondary {
+            background: #6c757d;
+            margin-left: 0.5rem;
+        }
+        
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+        
+        .btn-danger {
+            background: #dc3545;
+        }
+        
+        .btn-danger:hover {
+            background: #c82333;
+        }
+        
+        .error {
+            color: #dc3545;
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+        }
+        
+        .success {
+            color: #28a745;
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+        }
+        
+        .notes-list {
+            margin-top: 2rem;
+        }
+        
+        .note-item {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            position: relative;
+        }
+        
+        .note-title {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: #495057;
+        }
+        
+        .note-text {
+            color: #6c757d;
+            font-size: 0.9rem;
+            margin-bottom: 1rem;
+            max-height: 100px;
+            overflow: hidden;
+        }
+        
+        .note-controls {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+        
+        .note-controls button {
+            padding: 0.4rem 0.8rem;
+            font-size: 0.8rem;
+            width: auto;
+        }
+        
+        .playback-progress {
+            width: 100%;
+            height: 4px;
+            background: #e9ecef;
+            border-radius: 2px;
+            margin: 0.5rem 0;
+            cursor: pointer;
+        }
+        
+        .playback-progress-bar {
+            height: 100%;
+            background: #667eea;
+            border-radius: 2px;
+            transition: width 0.1s;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            padding: 0.2rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .status-generating {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .status-ready {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status-failed {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .voice-options {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+        
+        .voice-option {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 1rem;
+        }
+        
+        .loading.active {
+            display: block;
+        }
+        
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎵 Speccy</h1>
+            <p>Convert your text to high-quality speech</p>
+        </div>
+        
+        <!-- Authentication Form -->
+        <div class="auth-form active" id="authForm">
+            <div class="form-group">
+                <label for="openaiToken">OpenAI API Key</label>
+                <input type="password" id="openaiToken" placeholder="sk-..." required>
+                <div class="error" id="authError"></div>
+            </div>
+            <button class="btn" id="loginBtn">Get Started</button>
+            <div class="loading" id="authLoading">
+                <div class="spinner"></div>
+                <p>Authenticating...</p>
+            </div>
+        </div>
+        
+        <!-- Main Application -->
+        <div class="main-app" id="mainApp">
+            <div class="form-group">
+                <label for="noteTitle">Note Title</label>
+                <input type="text" id="noteTitle" placeholder="Enter a title for your note..." required>
+            </div>
+            
+            <div class="form-group">
+                <label for="noteText">Text to Convert</label>
+                <textarea id="noteText" placeholder="Enter the text you want to convert to speech..." required></textarea>
+            </div>
+            
+            <div class="form-group">
+                <label for="voiceSelect">Voice</label>
+                <select id="voiceSelect">
+                    <option value="alloy">Alloy</option>
+                    <option value="echo">Echo</option>
+                    <option value="fable">Fable</option>
+                    <option value="onyx">Onyx</option>
+                    <option value="nova">Nova</option>
+                    <option value="shimmer">Shimmer</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label for="modelSelect">Model</label>
+                <select id="modelSelect">
+                    <option value="tts-1">Standard (tts-1)</option>
+                    <option value="tts-1-hd">HD Quality (tts-1-hd)</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label for="speedRange">Speed: <span id="speedValue">1.0</span>x</label>
+                <input type="range" id="speedRange" min="0.25" max="4.0" step="0.25" value="1.0">
+            </div>
+            
+            <button class="btn" id="generateBtn">Generate Speech</button>
+            
+            <div class="loading" id="generateLoading">
+                <div class="spinner"></div>
+                <p>Generating speech...</p>
+            </div>
+            
+            <div class="error" id="generateError"></div>
+            <div class="success" id="generateSuccess"></div>
+            
+            <!-- Notes List -->
+            <div class="notes-list">
+                <h3>Your Notes</h3>
+                <div id="notesList"></div>
+            </div>
+            
+            <div style="text-align: center; margin-top: 2rem;">
+                <button class="btn btn-secondary" id="logoutBtn">Logout</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:3000';
+        let authToken = localStorage.getItem('authToken');
+        let currentAudio = null;
+        let notes = JSON.parse(localStorage.getItem('notes') || '[]');
+        let pollingIntervals = new Map(); // Track polling intervals for generating notes
+        
+        // DOM Elements
+        const authForm = document.getElementById('authForm');
+        const mainApp = document.getElementById('mainApp');
+        const openaiTokenInput = document.getElementById('openaiToken');
+        const loginBtn = document.getElementById('loginBtn');
+        const authError = document.getElementById('authError');
+        const authLoading = document.getElementById('authLoading');
+        
+        const noteTitle = document.getElementById('noteTitle');
+        const noteText = document.getElementById('noteText');
+        const voiceSelect = document.getElementById('voiceSelect');
+        const modelSelect = document.getElementById('modelSelect');
+        const speedRange = document.getElementById('speedRange');
+        const speedValue = document.getElementById('speedValue');
+        const generateBtn = document.getElementById('generateBtn');
+        const generateLoading = document.getElementById('generateLoading');
+        const generateError = document.getElementById('generateError');
+        const generateSuccess = document.getElementById('generateSuccess');
+        const notesList = document.getElementById('notesList');
+        const logoutBtn = document.getElementById('logoutBtn');
+        
+        // Initialize app
+        function init() {
+            if (authToken) {
+                showMainApp();
+                loadNotes();
+            } else {
+                showAuthForm();
+            }
+            
+            setupEventListeners();
+        }
+        
+        function setupEventListeners() {
+            loginBtn.addEventListener('click', handleLogin);
+            generateBtn.addEventListener('click', handleGenerate);
+            logoutBtn.addEventListener('click', handleLogout);
+            
+            speedRange.addEventListener('input', (e) => {
+                speedValue.textContent = e.target.value;
+            });
+            
+            openaiTokenInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    handleLogin();
+                }
+            });
+        }
+        
+        function showAuthForm() {
+            authForm.classList.add('active');
+            mainApp.classList.remove('active');
+        }
+        
+        function showMainApp() {
+            authForm.classList.remove('active');
+            mainApp.classList.add('active');
+        }
+        
+        async function handleLogin() {
+            const token = openaiTokenInput.value.trim();
+            if (!token) {
+                showError(authError, 'Please enter your OpenAI API key');
+                return;
+            }
+            
+            setLoading(authLoading, loginBtn, true);
+            clearError(authError);
+            
+            try {
+                const response = await fetch(`${API_BASE}/auth/verify`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ openai_token: token })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Authentication failed');
+                }
+                
+                const data = await response.json();
+                authToken = data.session_token;
+                localStorage.setItem('authToken', authToken);
+                localStorage.setItem('openaiToken', token);
+                
+                showMainApp();
+                loadNotes();
+                
+            } catch (error) {
+                showError(authError, 'Authentication failed. Please check your API key.');
+            } finally {
+                setLoading(authLoading, loginBtn, false);
+            }
+        }
+        
+        async function handleGenerate() {
+            const title = noteTitle.value.trim();
+            const text = noteText.value.trim();
+            const voice = voiceSelect.value;
+            const model = modelSelect.value;
+            const speed = parseFloat(speedRange.value);
+            const openaiToken = localStorage.getItem('openaiToken');
+            
+            if (!title || !text) {
+                showError(generateError, 'Please enter both title and text');
+                return;
+            }
+            
+            setLoading(generateLoading, generateBtn, true);
+            clearError(generateError);
+            clearSuccess(generateSuccess);
+            
+            try {
+                const response = await fetch(`${API_BASE}/tts/generate`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${authToken}`
+                    },
+                    body: JSON.stringify({
+                        text,
+                        voice,
+                        model,
+                        speed,
+                        openai_token: openaiToken
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Generation failed');
+                }
+                
+                const data = await response.json();
+                
+                // Add to notes
+                const note = {
+                    id: data.file_id,
+                    title,
+                    text,
+                    voice,
+                    model,
+                    speed,
+                    contentHash: data.content_hash,
+                    status: data.status,
+                    url: data.url,
+                    createdAt: new Date().toISOString()
+                };
+                
+                notes.unshift(note);
+                localStorage.setItem('notes', JSON.stringify(notes));
+                
+                renderNotes();
+                showSuccess(generateSuccess, 'Speech generation started!');
+                
+                // Start polling for status updates if generating
+                if (note.status === 'generating') {
+                    startPollingForStatus(note.id, note.contentHash);
+                }
+                
+                // Clear form
+                noteTitle.value = '';
+                noteText.value = '';
+                
+            } catch (error) {
+                showError(generateError, 'Generation failed. Please try again.');
+            } finally {
+                setLoading(generateLoading, generateBtn, false);
+            }
+        }
+        
+        function handleLogout() {
+            authToken = null;
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('openaiToken');
+            localStorage.removeItem('notes');
+            notes = [];
+            stopAllPolling();
+            showAuthForm();
+        }
+        
+        async function loadNotes() {
+            // Try to fetch notes from server first
+            try {
+                const response = await fetch(`${API_BASE}/tts/files`, {
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`
+                    }
+                });
+                
+                if (response.ok) {
+                    const serverNotes = await response.json();
+                    // Convert server format to client format
+                    notes = serverNotes.map(file => ({
+                        id: file.id,
+                        title: file.text_content.substring(0, 50) + (file.text_content.length > 50 ? '...' : ''), // Use text as title if no title stored
+                        text: file.text_content,
+                        voice: file.voice,
+                        model: file.model,
+                        speed: file.speed,
+                        contentHash: file.content_hash,
+                        status: file.status,
+                        url: file.url,
+                        createdAt: file.created_at
+                    }));
+                    localStorage.setItem('notes', JSON.stringify(notes));
+                } else {
+                    // Fallback to localStorage if server request fails
+                    notes = JSON.parse(localStorage.getItem('notes') || '[]');
+                }
+            } catch (error) {
+                console.error('Failed to load notes from server:', error);
+                // Fallback to localStorage
+                notes = JSON.parse(localStorage.getItem('notes') || '[]');
+            }
+            
+            renderNotes();
+            
+            // Start polling for any generating notes
+            notes.forEach(note => {
+                if (note.status === 'generating' && note.contentHash) {
+                    startPollingForStatus(note.id, note.contentHash);
+                }
+            });
+        }
+        
+        function renderNotes() {
+            if (notes.length === 0) {
+                notesList.innerHTML = '<p style="color: #666; text-align: center; padding: 2rem;">No notes yet. Create your first one above!</p>';
+                return;
+            }
+            
+            notesList.innerHTML = notes.map(note => `
+                <div class="note-item" data-id="${note.id}">
+                    <div class="note-title">${escapeHtml(note.title)}</div>
+                    <div class="note-text">${escapeHtml(note.text.substring(0, 200))}${note.text.length > 200 ? '...' : ''}</div>
+                    <div class="note-controls">
+                        <span class="status-indicator status-${note.status}">${note.status}</span>
+                        ${note.status === 'ready' ? `
+                            <button class="btn" onclick="playAudio('${note.id}')">Play</button>
+                            <button class="btn btn-secondary" onclick="downloadAudio('${note.id}', '${escapeHtml(note.title)}')">Download</button>
+                        ` : ''}
+                        <button class="btn btn-danger" onclick="deleteNote('${note.id}')">Delete</button>
+                    </div>
+                    ${note.status === 'ready' ? '<div class="playback-progress" onclick="seekAudio(event, this)"><div class="playback-progress-bar"></div></div>' : ''}
+                </div>
+            `).join('');
+        }
+        
+        async function playAudio(fileId) {
+            if (currentAudio) {
+                currentAudio.pause();
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/files/${fileId}`, {
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to load audio');
+                }
+                
+                const blob = await response.blob();
+                const audioUrl = URL.createObjectURL(blob);
+                
+                currentAudio = new Audio(audioUrl);
+                currentAudio.play();
+                
+                // Update progress bar
+                currentAudio.addEventListener('timeupdate', () => {
+                    const progress = (currentAudio.currentTime / currentAudio.duration) * 100;
+                    const progressBar = document.querySelector(`[data-id="${fileId}"] .playback-progress-bar`);
+                    if (progressBar) {
+                        progressBar.style.width = `${progress}%`;
+                    }
+                });
+                
+            } catch (error) {
+                alert('Failed to play audio');
+            }
+        }
+        
+        async function downloadAudio(fileId, title) {
+            try {
+                const response = await fetch(`${API_BASE}/files/${fileId}`, {
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to download audio');
+                }
+                
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${title}.mp3`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                
+            } catch (error) {
+                alert('Failed to download audio');
+            }
+        }
+        
+        async function deleteNote(fileId) {
+            if (!confirm('Are you sure you want to delete this note?')) {
+                return;
+            }
+            
+            try {
+                await fetch(`${API_BASE}/tts/delete/${fileId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`
+                    }
+                });
+                
+                // Remove from local storage
+                notes = notes.filter(note => note.id !== fileId);
+                localStorage.setItem('notes', JSON.stringify(notes));
+                renderNotes();
+                
+            } catch (error) {
+                alert('Failed to delete note');
+            }
+        }
+        
+        function seekAudio(event, progressBar) {
+            if (!currentAudio) return;
+            
+            const rect = progressBar.getBoundingClientRect();
+            const clickX = event.clientX - rect.left;
+            const width = rect.width;
+            const percentage = clickX / width;
+            
+            currentAudio.currentTime = currentAudio.duration * percentage;
+        }
+        
+        // Utility functions
+        function setLoading(loadingEl, btnEl, loading) {
+            if (loading) {
+                loadingEl.classList.add('active');
+                btnEl.disabled = true;
+            } else {
+                loadingEl.classList.remove('active');
+                btnEl.disabled = false;
+            }
+        }
+        
+        function showError(el, message) {
+            el.textContent = message;
+            el.style.display = 'block';
+        }
+        
+        function clearError(el) {
+            el.textContent = '';
+            el.style.display = 'none';
+        }
+        
+        function showSuccess(el, message) {
+            el.textContent = message;
+            el.style.display = 'block';
+        }
+        
+        function clearSuccess(el) {
+            el.textContent = '';
+            el.style.display = 'none';
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // Polling functions for status updates
+        function startPollingForStatus(fileId, contentHash) {
+            if (pollingIntervals.has(fileId)) {
+                return; // Already polling
+            }
+            
+            const interval = setInterval(async () => {
+                try {
+                    const response = await fetch(`${API_BASE}/tts/status/${contentHash}`, {
+                        headers: {
+                            'Authorization': `Bearer ${authToken}`
+                        }
+                    });
+                    
+                    if (response.ok) {
+                        const statusData = await response.json();
+                        
+                        if (statusData.status !== 'generating') {
+                            // Update note status
+                            const noteIndex = notes.findIndex(n => n.id === fileId);
+                            if (noteIndex !== -1) {
+                                notes[noteIndex].status = statusData.status;
+                                if (statusData.status === 'ready') {
+                                    notes[noteIndex].url = `/files/${fileId}`;
+                                }
+                                localStorage.setItem('notes', JSON.stringify(notes));
+                                renderNotes();
+                            }
+                            
+                            // Stop polling
+                            clearInterval(interval);
+                            pollingIntervals.delete(fileId);
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error polling status:', error);
+                }
+            }, 2000); // Poll every 2 seconds
+            
+            pollingIntervals.set(fileId, interval);
+            
+            // Auto-cleanup after 5 minutes
+            setTimeout(() => {
+                if (pollingIntervals.has(fileId)) {
+                    clearInterval(pollingIntervals.get(fileId));
+                    pollingIntervals.delete(fileId);
+                }
+            }, 300000);
+        }
+        
+        function stopAllPolling() {
+            pollingIntervals.forEach((interval) => {
+                clearInterval(interval);
+            });
+            pollingIntervals.clear();
+        }
+        
+        // Initialize app
+        init();
+    </script>
+</body>
+</html>
