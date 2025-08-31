@@ -4,9 +4,9 @@ import CryptoKit
 
 enum SyncStatus: String, CaseIterable, Codable {
     case localOnly = "local_only"       // File exists only locally
-    case uploading = "uploading"        // Currently uploading to iCloud
-    case synced = "synced"             // Successfully synced to iCloud
-    case downloadFailed = "download_failed" // Failed to download from iCloud
+    case uploading = "uploading"        // Currently uploading to backend
+    case synced = "synced"             // Successfully synced to backend
+    case downloadFailed = "download_failed" // Failed to download from backend
 }
 
 @Model
@@ -18,11 +18,10 @@ final class TTSAudioFile {
     var voice: String = ""
     var format: String = ""
     var createdAt: Date = Date()
-    var iCloudURL: URL?
     var syncStatus: SyncStatus = SyncStatus.localOnly
     var lastSyncAttempt: Date?
     
-    init(contentHash: String, filename: String, fileSize: Int64, model: String, voice: String, format: String, createdAt: Date = .now, iCloudURL: URL? = nil, syncStatus: SyncStatus = .localOnly) {
+    init(contentHash: String, filename: String, fileSize: Int64, model: String, voice: String, format: String, createdAt: Date = .now, syncStatus: SyncStatus = .localOnly) {
         self.contentHash = contentHash
         self.filename = filename
         self.fileSize = fileSize
@@ -30,7 +29,6 @@ final class TTSAudioFile {
         self.voice = voice
         self.format = format
         self.createdAt = createdAt
-        self.iCloudURL = iCloudURL
         self.syncStatus = syncStatus
         self.lastSyncAttempt = nil
     }

@@ -77,7 +77,6 @@ final class SpeechService: NSObject, ObservableObject {
 
     func configure(with modelContext: ModelContext) {
         self.modelContext = modelContext
-        iCloudSyncManager.shared.configure(with: modelContext)
     }
 
     @MainActor
@@ -103,46 +102,23 @@ final class SpeechService: NSObject, ObservableObject {
         }
         
         Task {
-            await preloadAudioWithSync(text: text, config: config, onProgress: onProgress, onCompletion: onCompletion)
+            await preloadAudio(text: text, config: config, onProgress: onProgress, onCompletion: onCompletion)
         }
     }
     
-    private func preloadAudioWithSync(text: String, config: OpenAIConfig, onProgress: @escaping (Double) -> Void, onCompletion: @escaping (Result<Void, Error>) -> Void) async {
+    private func preloadAudio(text: String, config: OpenAIConfig, onProgress: @escaping (Double) -> Void, onCompletion: @escaping (Result<Void, Error>) -> Void) async {
         let parts = chunkText(text)
         let urls: [URL] = parts.map { part in
             let key = cacheKey(text: part, model: config.model, voice: config.voice, format: config.format)
             return ensureCacheFileURL(forKey: key, format: config.format)
         }
         
-        // First, try to download any available files from iCloud
         var missingChunks: [(String, URL)] = []
-        var completedChunks = 0
         
         for (part, url) in zip(parts, urls) {
-            if FileManager.default.fileExists(atPath: url.path) {
-                completedChunks += 1
-                continue
-            }
-            
-            // Try to download from iCloud
-            let contentHash = TTSAudioFile.contentHash(for: part, model: config.model, voice: config.voice, format: config.format)
-            
-            do {
-                if let downloadedURL = try await iCloudSyncManager.shared.downloadAudioFileFromiCloud(contentHash: contentHash) {
-                    // Successfully downloaded from iCloud
-                    completedChunks += 1
-                    AppLogger.shared.info("Downloaded audio chunk from iCloud", category: .system)
-                } else {
-                    // Not available in iCloud, need to generate
-                    missingChunks.append((part, url))
-                }
-            } catch {
-                AppLogger.shared.warning("Failed to download from iCloud, will generate: \(error)", category: .system)
+            if !FileManager.default.fileExists(atPath: url.path) {
                 missingChunks.append((part, url))
             }
-            
-            let progress = Double(completedChunks) / Double(parts.count)
-            onProgress(progress)
         }
         
         if missingChunks.isEmpty {
@@ -151,11 +127,11 @@ final class SpeechService: NSObject, ObservableObject {
             return
         }
         
-        // Download remaining chunks and sync them to iCloud
-        downloadChunksSequentially(missingChunks: missingChunks, config: config, totalChunks: parts.count, onProgress: onProgress, onCompletion: onCompletion, syncToiCloud: true)
+        // Download missing chunks
+        downloadChunksSequentially(missingChunks: missingChunks, config: config, totalChunks: parts.count, onProgress: onProgress, onCompletion: onCompletion)
     }
     
-    private func downloadChunksSequentially(missingChunks: [(String, URL)], config: OpenAIConfig, totalChunks: Int, onProgress: @escaping (Double) -> Void, onCompletion: @escaping (Result<Void, Error>) -> Void, syncToiCloud: Bool = false) {
+    private func downloadChunksSequentially(missingChunks: [(String, URL)], config: OpenAIConfig, totalChunks: Int, onProgress: @escaping (Double) -> Void, onCompletion: @escaping (Result<Void, Error>) -> Void) {
         guard !missingChunks.isEmpty else {
             onProgress(1.0)
             onCompletion(.success(()))
@@ -179,26 +155,6 @@ final class SpeechService: NSObject, ObservableObject {
                     completedChunks += 1
                     let progress = Double(completedChunks) / Double(totalChunks)
                     onProgress(progress)
-                    
-                    // Sync to iCloud if requested
-                    if syncToiCloud {
-                        let contentHash = TTSAudioFile.contentHash(for: text, model: config.model, voice: config.voice, format: config.format)
-                        Task {
-                            do {
-                                try await iCloudSyncManager.shared.syncAudioFileToiCloud(
-                                    localURL: destination,
-                                    contentHash: contentHash,
-                                    model: config.model,
-                                    voice: config.voice,
-                                    format: config.format
-                                )
-                            } catch {
-                                AppLogger.shared.error("Failed to sync to iCloud: \(error)", category: .system)
-                                // Don't fail the whole operation if sync fails
-                            }
-                        }
-                    }
-                    
                     downloadNext()
                 case .failure(let error):
                     onCompletion(.failure(error))
@@ -292,61 +248,6 @@ final class SpeechService: NSObject, ObservableObject {
         return urls.allSatisfy { FileManager.default.fileExists(atPath: $0.path) }
     }
     
-    func isAudioAvailableInSync(for text: String) async -> Bool {
-        // If iCloud is not available, return false gracefully
-        guard iCloudSyncManager.shared.iCloudAvailable else {
-            AppLogger.shared.info("🔍 SYNC_CHECK: iCloud not available, sync check returning false", category: .sync)
-            return false
-        }
-        
-        guard let config = loadOpenAIConfig() else {
-            AppLogger.shared.error("🔍 SYNC_CHECK: No OpenAI config available", category: .sync)
-            return false
-        }
-        
-        guard let modelContext = modelContext else {
-            AppLogger.shared.error("🔍 SYNC_CHECK: No ModelContext available", category: .sync)
-            return false
-        }
-        
-        AppLogger.shared.info("🔍 SYNC_CHECK: Starting sync availability check for text (length: \(text.count))", category: .sync)
-        
-        let parts = chunkText(text)
-        
-        for (index, part) in parts.enumerated() {
-            let contentHash = TTSAudioFile.contentHash(for: part, model: config.model, voice: config.voice, format: config.format)
-            AppLogger.shared.info("🔍 SYNC_CHECK: Checking chunk \(index + 1)/\(parts.count), hash: \(contentHash.prefix(8))", category: .sync)
-            
-            // Check local cache first
-            let localURL = ensureCacheFileURL(forKey: contentHash, format: config.format)
-            if FileManager.default.fileExists(atPath: localURL.path) {
-                AppLogger.shared.info("🔍 SYNC_CHECK: Chunk found in local cache: \(contentHash.prefix(8))", category: .cache)
-                continue
-            }
-            
-            AppLogger.shared.info("🔍 SYNC_CHECK: Chunk not in local cache, checking iCloud for: \(contentHash.prefix(8))", category: .sync)
-            
-            // Check if available in iCloud sync using the improved method
-            do {
-                // Use the improved audioFileExists method from iCloudSyncManager
-                // which checks both local database AND physical iCloud files
-                let existsInSync = try await iCloudSyncManager.shared.audioFileExists(contentHash: contentHash)
-                if !existsInSync {
-                    AppLogger.shared.info("🔍 SYNC_CHECK: Chunk NOT available in iCloud for hash: \(contentHash.prefix(8))", category: .sync)
-                    return false // This chunk is not available anywhere
-                } else {
-                    AppLogger.shared.info("🔍 SYNC_CHECK: Chunk IS available in iCloud for hash: \(contentHash.prefix(8))", category: .sync)
-                }
-            } catch {
-                AppLogger.shared.error("🔍 SYNC_CHECK: Failed to check iCloud availability for hash \(contentHash.prefix(8)): \(error)", category: .cache)
-                return false
-            }
-        }
-        
-        AppLogger.shared.info("🔍 SYNC_CHECK: All chunks available in sync - returning true", category: .sync)
-        
-        return true
-    }
 
     @MainActor
     func speak(text: String, title: String? = nil, resumeKey: String? = nil, voiceIdentifier: String? = nil, languageCode: String? = nil, rate: Float = AVSpeechUtteranceDefaultSpeechRate) {
@@ -394,65 +295,16 @@ final class SpeechService: NSObject, ObservableObject {
         } else {
             chunkDurations = []
         }
-        // First, try to download missing chunks from iCloud before falling back to OpenAI
+        // Check for missing chunks that need to be downloaded from OpenAI
         let missingUrls = zip(parts, urls).filter { (_, url) in !FileManager.default.fileExists(atPath: url.path) }
         
-        if !missingUrls.isEmpty && iCloudSyncManager.shared.iCloudAvailable {
-            AppLogger.shared.info("🎵 PLAYBACK: Found \(missingUrls.count) missing chunks, attempting to download from iCloud first...", category: .speech)
-            AppLogger.shared.info("🎵 PLAYBACK: iCloud available: \(iCloudSyncManager.shared.iCloudAvailable)", category: .speech)
-            
-            Task {
-                var stillMissingAfterSync: [(String, URL)] = []
-                
-                for (part, url) in missingUrls {
-                    let contentHash = TTSAudioFile.contentHash(for: part, model: config.model, voice: config.voice, format: config.format)
-                    
-                    AppLogger.shared.info("🔍 PLAYBACK: Attempting to download chunk from iCloud - hash: \(contentHash.prefix(8)), expectedURL: \(url.lastPathComponent)", category: .speech)
-                    
-                    do {
-                        // Try to download this chunk from iCloud
-                        if let downloadedURL = try await iCloudSyncManager.shared.downloadAudioFileFromiCloud(contentHash: contentHash) {
-                            AppLogger.shared.info("✅ PLAYBACK: Successfully downloaded chunk from iCloud: \(contentHash.prefix(8)) -> \(downloadedURL.path)", category: .speech)
-                            
-                            // Copy from downloaded location to expected cache location if needed
-                            if downloadedURL != url {
-                                AppLogger.shared.info("📋 PLAYBACK: Copying from iCloud cache \(downloadedURL.lastPathComponent) to speech cache \(url.lastPathComponent)", category: .speech)
-                                try FileManager.default.copyItem(at: downloadedURL, to: url)
-                                AppLogger.shared.info("✅ PLAYBACK: Copy completed successfully", category: .speech)
-                            } else {
-                                AppLogger.shared.info("✅ PLAYBACK: File already in correct location", category: .speech)
-                            }
-                        } else {
-                            AppLogger.shared.warning("❌ PLAYBACK: downloadAudioFileFromiCloud returned nil for hash: \(contentHash.prefix(8))", category: .speech)
-                            AppLogger.shared.info("Will generate via OpenAI instead", category: .speech)
-                            stillMissingAfterSync.append((part, url))
-                        }
-                    } catch {
-                        AppLogger.shared.error("💥 PLAYBACK: Exception downloading from iCloud - hash: \(contentHash.prefix(8)), error: \(error.localizedDescription)", category: .speech)
-                        stillMissingAfterSync.append((part, url))
-                    }
-                }
-                
-                await MainActor.run {
-                    // Update pendingDownloads with only the chunks we still need to generate
-                    self.pendingDownloads = stillMissingAfterSync
-                    self.downloadedChunksCount = 0
-                    self.log("After iCloud check: total=\(self.chunksTotalCount), stillNeedToGenerate=\(self.pendingDownloads.count)")
-                    
-                    self.currentDownloadExpectedBytes = 0
-                    self.currentDownloadWrittenBytes = 0
-                    self.continueWithPlayback()
-                }
-            }
-        } else {
-            // No missing chunks or iCloud unavailable, prepare for immediate OpenAI generation
-            pendingDownloads = missingUrls
-            downloadedChunksCount = 0
-            log("OpenAI chunks: total=\(chunksTotalCount), toDownload=\(pendingDownloads.count)")
-            currentDownloadExpectedBytes = 0
-            currentDownloadWrittenBytes = 0
-            continueWithPlayback()
-        }
+        // Prepare for OpenAI generation of missing chunks
+        pendingDownloads = missingUrls
+        downloadedChunksCount = 0
+        log("OpenAI chunks: total=\(chunksTotalCount), toDownload=\(pendingDownloads.count)")
+        currentDownloadExpectedBytes = 0
+        currentDownloadWrittenBytes = 0
+        continueWithPlayback()
     }
     
     @MainActor

@@ -4,7 +4,7 @@ import SwiftUI
 struct DocumentEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
-    @ObservedObject private var downloadManager = DownloadManager.shared
+    @ObservedObject private var downloadManager = DownloadManagerBackend.shared
 
     @State var document: SpeechDocument
     var isNew: Bool = false

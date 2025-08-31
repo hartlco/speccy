@@ -150,9 +150,9 @@ struct DocumentDetailView: View {
             checkAndStartDownload()
             // Check sync availability for play button state and sync status UI
             Task {
-                AppLogger.shared.info("📱 UI: Checking sync availability for document: \(document.title)", category: .sync)
+                AppLogger.shared.info("📱 UI: Checking sync availability for document: \(document.title)", category: .system)
                 isSyncAvailable = await speechService.isAudioAvailableInSync(for: document.plainText)
-                AppLogger.shared.info("📱 UI: Sync availability result: \(isSyncAvailable)", category: .sync)
+                AppLogger.shared.info("📱 UI: Sync availability result: \(isSyncAvailable)", category: .system)
             }
             // Check and update sync availability in download manager
             downloadManager.checkSyncAvailability(for: document.id.uuidString, text: document.plainText)
@@ -245,7 +245,7 @@ struct DocumentDetailView: View {
         // Check if audio is available in sync before generating new TTS
         Task {
             let isAvailableInSync = await speechService.isAudioAvailableInSync(for: document.plainText)
-            AppLogger.shared.info("Audio availability check - isAvailableInSync: \(isAvailableInSync) for document: \(document.title)", category: .sync)
+            AppLogger.shared.info("Audio availability check - isAvailableInSync: \(isAvailableInSync) for document: \(document.title)", category: .system)
             
             if !isAvailableInSync {
                 // Audio is not available anywhere, request consent for TTS generation
@@ -254,7 +254,7 @@ struct DocumentDetailView: View {
                     requestTTSConsent()
                 }
             } else {
-                AppLogger.shared.info("Audio is available in sync, skipping TTS generation for document: \(document.title)", category: .sync)
+                AppLogger.shared.info("Audio is available in sync, skipping TTS generation for document: \(document.title)", category: .system)
             }
         }
     }
@@ -342,9 +342,9 @@ struct DocumentDetailView: View {
         switch syncState {
         case .some(.notSynced):
             HStack {
-                Image(systemName: "icloud.slash")
+                Image(systemName: "server.rack")
                     .foregroundStyle(.secondary)
-                Text("Not synced to iCloud")
+                Text("Not synced to backend")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -356,10 +356,10 @@ struct DocumentDetailView: View {
             
         case .some(.syncing):
             HStack {
-                Image(systemName: "icloud.and.arrow.up")
+                Image(systemName: "arrow.up.to.line.compact")
                     .foregroundStyle(.blue)
                     .symbolEffect(.pulse)
-                Text("Syncing to iCloud...")
+                Text("Syncing to backend...")
                     .font(.caption)
                     .foregroundStyle(.blue)
                 Spacer()
@@ -371,9 +371,9 @@ struct DocumentDetailView: View {
             
         case .some(.synced):
             HStack {
-                Image(systemName: "icloud.and.arrow.up.fill")
+                Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
-                Text("Synced to iCloud")
+                Text("Synced to backend")
                     .font(.caption)
                     .foregroundStyle(.green)
                 Spacer()
@@ -383,32 +383,11 @@ struct DocumentDetailView: View {
             .background(Color.green.opacity(0.1))
             .clipShape(RoundedRectangle(cornerRadius: 6))
             
-        // .availableInCloud case removed - not applicable with backend service
-            
-        case .some(.iCloudUnavailable):
-            HStack {
-                Image(systemName: "exclamationmark.icloud")
-                    .foregroundStyle(.orange)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("iCloud unavailable")
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.orange)
-                    Text("Sign into iCloud or check iCloud Drive settings")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-                Spacer()
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-            .background(Color.orange.opacity(0.1))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+        // Backend service handles sync automatically, no need for unavailable state
             
         case .some(.syncFailed(let error)):
             HStack {
-                Image(systemName: "icloud.slash.fill")
+                Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Sync failed")

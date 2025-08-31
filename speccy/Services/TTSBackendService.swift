@@ -43,7 +43,21 @@ struct FileStatusResponse: Codable {
 class TTSBackendService: NSObject, ObservableObject {
     static let shared = TTSBackendService()
     
-    private let baseURL = "http://localhost:3000" // TODO: Configure for production
+    private let baseURL: String = {
+        #if DEBUG
+        // Development environment - local server
+        return "http://localhost:3000"
+        #else
+        // Production environment - use your production server URL
+        if let customURL = Bundle.main.object(forInfoDictionaryKey: "BackendBaseURL") as? String,
+           !customURL.isEmpty {
+            return customURL
+        }
+        // Default production URL - update this with your actual server
+        return "https://your-server.com"
+        #endif
+    }()
+    
     private var sessionToken: String?
     
     @Published var isAuthenticated: Bool = false
@@ -65,6 +79,7 @@ class TTSBackendService: NSObject, ObservableObject {
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.timeoutInterval = 30.0 // 30 second timeout for auth
         urlRequest.httpBody = try JSONEncoder().encode(request)
         
         let (data, response) = try await URLSession.shared.data(for: urlRequest)
@@ -124,6 +139,7 @@ class TTSBackendService: NSObject, ObservableObject {
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        urlRequest.timeoutInterval = 60.0 // 60 seconds for TTS generation request (just the initial request)
         urlRequest.httpBody = try JSONEncoder().encode(request)
         
         let (data, response) = try await URLSession.shared.data(for: urlRequest)
@@ -155,6 +171,7 @@ class TTSBackendService: NSObject, ObservableObject {
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "GET"
         urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        urlRequest.timeoutInterval = 30.0 // 30 seconds for status checks
         
         let (data, response) = try await URLSession.shared.data(for: urlRequest)
         
@@ -184,6 +201,7 @@ class TTSBackendService: NSObject, ObservableObject {
         
         var urlRequest = URLRequest(url: url)
         urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        urlRequest.timeoutInterval = 120.0 // 2 minutes for file downloads
         
         let (tempURL, response) = try await URLSession.shared.download(for: urlRequest)
         

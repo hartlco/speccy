@@ -4,7 +4,7 @@ import SwiftUI
 struct DocumentListView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \SpeechDocument.updatedAt, order: .reverse) private var documents: [SpeechDocument]
-    @ObservedObject private var downloadManager = DownloadManager.shared
+    @ObservedObject private var downloadManager = DownloadManagerBackend.shared
 
     @State private var showingNew = false
     @State private var showingSettings = false

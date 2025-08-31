@@ -1,17 +1,12 @@
 import SwiftUI
 
 struct DownloadsView: View {
-    @ObservedObject private var downloadManager = DownloadManager.shared
+    @ObservedObject private var downloadManager = DownloadManagerBackend.shared
     @Environment(\.dismiss) private var dismiss
     
     var body: some View {
         NavigationView {
             List {
-                Section {
-                    iCloudStatusView()
-                } header: {
-                    Text("Sync Status")
-                }
                 
                 if downloadManager.downloads.isEmpty {
                     ContentUnavailableView(
@@ -35,7 +30,7 @@ struct DownloadsView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     if !downloadManager.downloads.isEmpty {
                         Button("Clean Up") {
-                            downloadManager.cleanupOldDownloads()
+                            downloadManager.clearCompletedDownloads()
                         }
                     }
                 }
@@ -46,7 +41,7 @@ struct DownloadsView: View {
                 ToolbarItem(placement: .automatic) {
                     if !downloadManager.downloads.isEmpty {
                         Button("Clean Up") {
-                            downloadManager.cleanupOldDownloads()
+                            downloadManager.clearCompletedDownloads()
                         }
                     }
                 }
@@ -58,14 +53,14 @@ struct DownloadsView: View {
     private func deleteDownloads(at offsets: IndexSet) {
         for index in offsets {
             let download = downloadManager.downloads[index]
-            downloadManager.removeDownload(download.id)
+            downloadManager.removeDownload(downloadId: download.id)
         }
     }
 }
 
 struct DownloadRowView: View {
-    let download: DownloadManager.DownloadItem
-    @ObservedObject private var downloadManager = DownloadManager.shared
+    let download: DownloadManagerBackend.DownloadItem
+    @ObservedObject private var downloadManager = DownloadManagerBackend.shared
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -102,7 +97,7 @@ struct DownloadRowView: View {
             HStack(spacing: 12) {
                 if case .failed = download.state {
                     Button("Retry") {
-                        downloadManager.retryDownload(download.id)
+                        downloadManager.retryDownload(downloadId: download.id)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)

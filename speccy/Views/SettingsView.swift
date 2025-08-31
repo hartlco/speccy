@@ -43,22 +43,6 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
             }
             
-            Section("iCloud Sync") {
-                iCloudStatusView()
-                
-                HStack {
-                    Text("Sync Audio Files")
-                    Spacer()
-                    Text(iCloudSyncManager.shared.iCloudAvailable ? "Enabled" : "Unavailable")
-                        .foregroundColor(.secondary)
-                }
-                
-                if case .error(let errorMessage) = iCloudSyncManager.shared.syncStatus {
-                    Text("Sync Error: \(errorMessage)")
-                        .foregroundColor(.red)
-                        .font(.caption)
-                }
-            }
             
             Section("Debugging") {
                 HStack {

@@ -9,5 +9,7 @@
 		<string>processing</string>
 		<string>remote-notification</string>
 	</array>
+	<key>BackendBaseURL</key>
+	<string></string>
 </dict>
 </plist>

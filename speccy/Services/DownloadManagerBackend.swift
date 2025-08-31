@@ -132,6 +132,15 @@ class DownloadManagerBackend: ObservableObject {
         activeDownloads.removeValue(forKey: downloadId)
     }
     
+    func retryDownload(downloadId: String) {
+        // Find the download item and restart it
+        if let downloadIndex = downloads.firstIndex(where: { $0.id == downloadId }) {
+            let download = downloads[downloadIndex]
+            downloads[downloadIndex].state = .pending
+            startDownload(for: download.documentId, title: download.title, text: download.text)
+        }
+    }
+    
     func clearCompletedDownloads() {
         downloads.removeAll { 
             if case .completed = $0.state {
@@ -167,12 +176,12 @@ class DownloadManagerBackend: ObservableObject {
     
     func checkSyncAvailability(for documentId: String, text: String) {
         // With backend service, sync is automatic - no need for separate sync availability check
-        AppLogger.shared.info("Sync availability check not needed with backend service", category: .sync)
+        AppLogger.shared.info("Sync availability check not needed with backend service", category: .system)
     }
     
     func refreshAllSyncStates() {
         // No-op with backend service
-        AppLogger.shared.info("Sync state refresh not needed with backend service", category: .sync)
+        AppLogger.shared.info("Sync state refresh not needed with backend service", category: .system)
     }
     
     func getDownloadState(for documentId: String) -> DownloadState? {
@@ -182,8 +191,7 @@ class DownloadManagerBackend: ObservableObject {
     enum SyncState {
         case notSynced // For compatibility with existing UI
         case syncing // For compatibility with existing UI
-        case synced // Backend service is always "synced"  
-        case iCloudUnavailable // For compatibility with existing UI
+        case synced // Backend service is always "synced"
         case syncFailed(Error) // For compatibility with existing UI
     }
     

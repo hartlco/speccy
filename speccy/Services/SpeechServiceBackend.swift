@@ -5,7 +5,7 @@ import CryptoKit
 import MediaPlayer
 import SwiftData
 
-/// TTS service using backend API instead of direct OpenAI calls and iCloud sync.
+/// TTS service using backend API instead of direct OpenAI calls.
 @MainActor
 final class SpeechServiceBackend: NSObject, ObservableObject {
     static let shared = SpeechServiceBackend()
@@ -77,6 +77,8 @@ final class SpeechServiceBackend: NSObject, ObservableObject {
             return
         }
         
+        AppLogger.shared.info("Starting preload for text of length: \(text.count) characters", category: .system)
+        
         Task {
             await preloadAudioWithBackend(text: text, config: config, onProgress: onProgress, onCompletion: onCompletion)
         }
@@ -125,12 +127,14 @@ final class SpeechServiceBackend: NSObject, ObservableObject {
     }
     
     private func downloadChunksFromBackend(missingChunks: [(String, URL)], config: OpenAIConfig, totalChunks: Int, onProgress: @escaping (Double) -> Void, onCompletion: @escaping (Result<Void, Error>) -> Void) async {
-        var remainingChunks = missingChunks
+        // Store generation requests for async polling
+        var pendingGenerations: [(contentHash: String, destination: URL)] = []
         var completedChunks = totalChunks - missingChunks.count
         
-        for (text, destination) in remainingChunks {
+        // First, initiate all TTS generations without waiting
+        for (text, destination) in missingChunks {
             do {
-                // Generate TTS via backend
+                // Generate TTS via backend (returns immediately)
                 let ttsResponse = try await backendService.generateTTS(
                     text: text,
                     voice: config.voice,
@@ -140,15 +144,17 @@ final class SpeechServiceBackend: NSObject, ObservableObject {
                     openAIToken: config.apiKey
                 )
                 
-                guard let fileId = ttsResponse.file_id, let status = ttsResponse.status else {
+                guard let status = ttsResponse.status else {
                     throw TTSBackendError.ttsGenerationFailed("Invalid response from backend")
                 }
                 
                 if status == "ready" {
-                    // File is ready, download it
-                    let localURL = try await backendService.downloadFile(fileId: fileId)
+                    // File is already ready, download immediately
+                    guard let fileId = ttsResponse.file_id else {
+                        throw TTSBackendError.ttsGenerationFailed("Missing file ID for ready file")
+                    }
                     
-                    // Move to our cache location
+                    let localURL = try await backendService.downloadFile(fileId: fileId)
                     try? FileManager.default.removeItem(at: destination)
                     try FileManager.default.moveItem(at: localURL, to: destination)
                     
@@ -157,47 +163,106 @@ final class SpeechServiceBackend: NSObject, ObservableObject {
                     onProgress(progress)
                     
                 } else if status == "generating" {
-                    // Wait for generation to complete
+                    // Add to pending list for polling
                     guard let contentHash = ttsResponse.content_hash else {
                         throw TTSBackendError.ttsGenerationFailed("Missing content hash")
                     }
+                    pendingGenerations.append((contentHash: contentHash, destination: destination))
                     
-                    // Poll for completion
-                    let maxPolls = 30 // Max 30 seconds
-                    for _ in 0..<maxPolls {
-                        try await Task.sleep(nanoseconds: 1_000_000_000) // Wait 1 second
-                        
-                        let statusResponse = try await backendService.getFileStatus(contentHash: contentHash)
-                        
-                        if statusResponse.status == "ready", let fileId = statusResponse.file_id {
-                            let localURL = try await backendService.downloadFile(fileId: fileId)
-                            
-                            try? FileManager.default.removeItem(at: destination)
-                            try FileManager.default.moveItem(at: localURL, to: destination)
-                            
-                            completedChunks += 1
-                            let progress = Double(completedChunks) / Double(totalChunks)
-                            onProgress(progress)
-                            break
-                            
-                        } else if statusResponse.status == "failed" {
-                            throw TTSBackendError.ttsGenerationFailed("Backend generation failed")
-                        }
-                        // Continue polling if still generating
-                    }
                 } else if status == "failed" {
-                    throw TTSBackendError.ttsGenerationFailed("Backend generation failed")
+                    throw TTSBackendError.ttsGenerationFailed("Backend generation failed immediately")
                 }
                 
             } catch {
-                AppLogger.shared.error("Failed to download chunk from backend: \(error)", category: .system)
+                AppLogger.shared.error("Failed to initiate TTS generation: \(error)", category: .system)
                 onCompletion(.failure(error))
                 return
             }
         }
         
-        onProgress(1.0)
-        onCompletion(.success(()))
+        // If all chunks are already ready, complete immediately
+        if pendingGenerations.isEmpty {
+            onProgress(1.0)
+            onCompletion(.success(()))
+            return
+        }
+        
+        // Poll for pending generations with extended timeout for large texts
+        await pollPendingGenerations(
+            pending: pendingGenerations,
+            completedChunks: &completedChunks,
+            totalChunks: totalChunks,
+            onProgress: onProgress,
+            onCompletion: onCompletion
+        )
+    }
+    
+    private func pollPendingGenerations(
+        pending: [(contentHash: String, destination: URL)],
+        completedChunks: inout Int,
+        totalChunks: Int,
+        onProgress: @escaping (Double) -> Void,
+        onCompletion: @escaping (Result<Void, Error>) -> Void
+    ) async {
+        var remainingGenerations = pending
+        let maxPolls = 600 // Max 10 minutes (600 * 1 second)
+        let pollInterval: UInt64 = 1_000_000_000 // 1 second
+        
+        for pollCount in 0..<maxPolls {
+            guard !remainingGenerations.isEmpty else {
+                // All generations completed
+                onProgress(1.0)
+                onCompletion(.success(()))
+                return
+            }
+            
+            // Check status of all pending generations
+            var stillPending: [(contentHash: String, destination: URL)] = []
+            
+            for (contentHash, destination) in remainingGenerations {
+                do {
+                    let statusResponse = try await backendService.getFileStatus(contentHash: contentHash)
+                    
+                    if statusResponse.status == "ready", let fileId = statusResponse.file_id {
+                        // Generation complete, download file
+                        let localURL = try await backendService.downloadFile(fileId: fileId)
+                        try? FileManager.default.removeItem(at: destination)
+                        try FileManager.default.moveItem(at: localURL, to: destination)
+                        
+                        completedChunks += 1
+                        let progress = Double(completedChunks) / Double(totalChunks)
+                        onProgress(progress)
+                        
+                    } else if statusResponse.status == "failed" {
+                        AppLogger.shared.error("Backend generation failed for hash: \(contentHash)", category: .system)
+                        onCompletion(.failure(TTSBackendError.ttsGenerationFailed("Backend generation failed")))
+                        return
+                        
+                    } else {
+                        // Still generating, keep polling
+                        stillPending.append((contentHash: contentHash, destination: destination))
+                    }
+                    
+                } catch {
+                    AppLogger.shared.error("Error checking generation status: \(error)", category: .system)
+                    stillPending.append((contentHash: contentHash, destination: destination)) // Keep trying
+                }
+            }
+            
+            remainingGenerations = stillPending
+            
+            // Wait before next poll (unless this is the last iteration)
+            if pollCount < maxPolls - 1 && !remainingGenerations.isEmpty {
+                try? await Task.sleep(nanoseconds: pollInterval)
+            }
+        }
+        
+        // Timeout reached
+        if !remainingGenerations.isEmpty {
+            let errorMessage = "Timeout waiting for TTS generation (\(remainingGenerations.count) chunks still pending)"
+            AppLogger.shared.error(errorMessage, category: .system)
+            onCompletion(.failure(TTSBackendError.ttsGenerationFailed(errorMessage)))
+        }
     }
 
     @MainActor
@@ -354,35 +419,77 @@ final class SpeechServiceBackend: NSObject, ObservableObject {
     // MARK: - Helper Methods (keeping existing implementations)
     
     private func chunkText(_ text: String) -> [String] {
-        // Keep existing chunking logic
-        let maxChunkLength = 3000
+        // Updated chunking logic for larger texts - let backend handle the chunking
+        // We'll use larger chunks since backend can handle them better now
+        let maxChunkLength = 8000 // Larger chunks since backend will re-chunk as needed
+        
+        if text.count <= maxChunkLength {
+            return [text]
+        }
+        
         var chunks: [String] = []
         var currentChunk = ""
         
-        let sentences = text.components(separatedBy: CharacterSet(charactersIn: ".!?"))
+        // Split by paragraphs first for better natural breaks
+        let paragraphs = text.components(separatedBy: CharacterSet.newlines)
         
-        for sentence in sentences {
-            let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty { continue }
-            
-            if currentChunk.count + trimmed.count + 1 <= maxChunkLength {
+        for paragraph in paragraphs {
+            let trimmed = paragraph.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { 
+                // Add paragraph break to current chunk if it's not empty
                 if !currentChunk.isEmpty {
-                    currentChunk += ". "
+                    currentChunk += "\n\n"
+                }
+                continue
+            }
+            
+            if currentChunk.count + trimmed.count + 2 <= maxChunkLength { // +2 for \n\n
+                if !currentChunk.isEmpty {
+                    currentChunk += "\n\n"
                 }
                 currentChunk += trimmed
             } else {
+                // Current chunk is full, save it and start new chunk
                 if !currentChunk.isEmpty {
-                    chunks.append(currentChunk + ".")
+                    chunks.append(currentChunk)
                 }
-                currentChunk = trimmed
+                
+                // If single paragraph is too long, split by sentences
+                if trimmed.count > maxChunkLength {
+                    let sentences = trimmed.components(separatedBy: CharacterSet(charactersIn: ".!?"))
+                    var sentenceChunk = ""
+                    
+                    for sentence in sentences {
+                        let sentenceTrimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if sentenceTrimmed.isEmpty { continue }
+                        
+                        if sentenceChunk.count + sentenceTrimmed.count + 2 <= maxChunkLength {
+                            if !sentenceChunk.isEmpty {
+                                sentenceChunk += ". "
+                            }
+                            sentenceChunk += sentenceTrimmed
+                        } else {
+                            if !sentenceChunk.isEmpty {
+                                chunks.append(sentenceChunk + ".")
+                            }
+                            sentenceChunk = sentenceTrimmed
+                        }
+                    }
+                    
+                    currentChunk = sentenceChunk.isEmpty ? "" : sentenceChunk + "."
+                } else {
+                    currentChunk = trimmed
+                }
             }
         }
         
         if !currentChunk.isEmpty {
-            chunks.append(currentChunk + ".")
+            chunks.append(currentChunk)
         }
         
-        return chunks.isEmpty ? [text] : chunks
+        let resultChunks = chunks.isEmpty ? [text] : chunks
+        AppLogger.shared.info("Text chunked into \(resultChunks.count) chunks for backend processing", category: .system)
+        return resultChunks
     }
     
     private func cacheKey(text: String, model: String, voice: String, format: String) -> String {
@@ -406,17 +513,39 @@ final class SpeechServiceBackend: NSObject, ObservableObject {
     }
     
     private func loadOpenAIConfig() -> OpenAIConfig? {
-        guard let path = Bundle.main.path(forResource: "Config", ofType: "plist"),
-              let plist = NSDictionary(contentsOfFile: path),
-              let apiKey = plist["OPENAI_API_KEY"] as? String else {
+        // Priority: UserDefaults -> Info.plist -> env var -> Config.plist
+        let defaultsKey = UserDefaults.standard.string(forKey: "OPENAI_API_KEY")
+        let infoKey = Bundle.main.infoDictionary?["OPENAI_API_KEY"] as? String
+        let envKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
+        
+        // Check Config.plist as fallback
+        var configPlistKey: String?
+        if let path = Bundle.main.path(forResource: "Config", ofType: "plist"),
+           let plist = NSDictionary(contentsOfFile: path) {
+            configPlistKey = plist["OPENAI_API_KEY"] as? String
+        }
+        
+        guard let apiKey = defaultsKey ?? infoKey ?? envKey ?? configPlistKey, !apiKey.isEmpty else {
+            AppLogger.shared.error("Missing OPENAI_API_KEY. Set in UserDefaults, Info.plist, environment, or Config.plist.", category: .system)
             return nil
         }
         
+        // Get model/voice/format from UserDefaults or fallback to defaults
+        // Migration: Clear invalid model values that aren't supported by backend
+        let savedModel = UserDefaults.standard.string(forKey: "OPENAI_TTS_MODEL")
+        if let savedModel = savedModel, !["tts-1", "tts-1-hd"].contains(savedModel) {
+            UserDefaults.standard.removeObject(forKey: "OPENAI_TTS_MODEL")
+        }
+        
+        let model = UserDefaults.standard.string(forKey: "OPENAI_TTS_MODEL") ?? "tts-1"
+        let voice = UserDefaults.standard.string(forKey: "OPENAI_TTS_VOICE") ?? "alloy"
+        let format = UserDefaults.standard.string(forKey: "OPENAI_TTS_FORMAT") ?? "mp3"
+        
         return OpenAIConfig(
             apiKey: apiKey,
-            model: plist["OPENAI_MODEL"] as? String ?? "tts-1",
-            voice: plist["OPENAI_VOICE"] as? String ?? "nova",
-            format: plist["OPENAI_FORMAT"] as? String ?? "mp3"
+            model: model,
+            voice: voice,
+            format: format
         )
     }
     
