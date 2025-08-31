@@ -3,49 +3,70 @@ import SwiftUI
 
 struct DocumentDetailView: View {
     @Environment(\.modelContext) private var modelContext
-    @ObservedObject private var downloadManager = DownloadManagerBackend.shared
+    @ObservedObject private var documentStateManager = DocumentStateManager.shared
     @ObservedObject private var playbackManager = PlaybackManager.shared
     @ObservedObject private var speechService = SpeechServiceBackend.shared
-    @ObservedObject private var consentManager = TTSConsentManager.shared
     
     @State var document: SpeechDocument
     @State private var showingEditor = false
     @State private var showingPlayer = false
-    @State private var isSyncAvailable = false
     
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 // Action buttons at top
                 HStack(spacing: 12) {
-                    Button {
-                        if playbackManager.isCurrentSession(documentId: document.id.uuidString) {
-                            // If this document is currently playing, show the full player
-                            showingPlayer = true
-                        } else {
-                            // Start new playback session
-                            startPlayback()
+                    // Play/Download button
+                    if document.canDownload {
+                        Button {
+                            downloadAndPlay()
+                        } label: {
+                            HStack {
+                                Image(systemName: "arrow.down.circle")
+                                Text("Download & Play")
+                            }
+                            .frame(maxWidth: .infinity)
                         }
-                    } label: {
-                        HStack {
+                        .buttonStyle(.borderedProminent)
+                    } else if canPlay {
+                        Button {
                             if playbackManager.isCurrentSession(documentId: document.id.uuidString) {
-                                if playbackManager.isPlaying {
-                                    Image(systemName: "waveform")
-                                        .symbolEffect(.variableColor.iterative)
-                                } else if playbackManager.isPaused {
-                                    Image(systemName: "pause.fill")
+                                showingPlayer = true
+                            } else {
+                                startPlayback()
+                            }
+                        } label: {
+                            HStack {
+                                if playbackManager.isCurrentSession(documentId: document.id.uuidString) {
+                                    if playbackManager.isPlaying {
+                                        Image(systemName: "waveform")
+                                            .symbolEffect(.variableColor.iterative)
+                                    } else if playbackManager.isPaused {
+                                        Image(systemName: "pause.fill")
+                                    } else {
+                                        Image(systemName: "play.fill")
+                                    }
                                 } else {
                                     Image(systemName: "play.fill")
                                 }
-                            } else {
-                                Image(systemName: "play.fill")
+                                Text(playButtonText)
                             }
-                            Text(playButtonText)
+                            .frame(maxWidth: .infinity)
                         }
-                        .frame(maxWidth: .infinity)
+                        .buttonStyle(.borderedProminent)
+                    } else {
+                        Button {
+                            // Disabled button for non-playable documents
+                        } label: {
+                            HStack {
+                                Image(systemName: "play.fill")
+                                Text("Not Available")
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(true)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!canPlay)
                     
                     Button {
                         showingEditor = true
@@ -57,6 +78,7 @@ struct DocumentDetailView: View {
                         .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
+                    .disabled(!document.isEditable)
                 }
                 
                 // Document content
@@ -81,54 +103,8 @@ struct DocumentDetailView: View {
                 .background(Color.primary.colorInvert().opacity(0.05))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 
-                // Download status
-                if let downloadState = currentDownloadState {
-                    switch downloadState {
-                    case .pending:
-                        downloadStatusView(
-                            icon: "clock",
-                            color: .orange,
-                            title: "Queued for download",
-                            subtitle: "Waiting to start...",
-                            showCancel: true
-                        )
-                    case .downloading(let progress):
-                        downloadStatusView(
-                            icon: "arrow.down.circle",
-                            color: .blue,
-                            title: "Downloading audio...",
-                            subtitle: "\(Int(progress * 100))%",
-                            progress: progress,
-                            showCancel: true
-                        )
-                    case .failed(let error):
-                        downloadStatusView(
-                            icon: "exclamationmark.triangle",
-                            color: .red,
-                            title: "Download failed",
-                            subtitle: error.localizedDescription,
-                            showRetry: true
-                        )
-                    case .cancelled:
-                        downloadStatusView(
-                            icon: "xmark.circle",
-                            color: .secondary,
-                            title: "Download cancelled",
-                            subtitle: "Tap retry to download again",
-                            showRetry: true
-                        )
-                    case .completed:
-                        // Show sync status for completed downloads
-                        if let syncState = currentSyncState {
-                            syncStatusView(syncState: syncState)
-                        }
-                    }
-                }
-                
-                // Show sync status for documents without active downloads
-                if currentDownloadState == nil, let syncState = currentSyncState {
-                    syncStatusView(syncState: syncState)
-                }
+                // Generation status
+                generationStatusView()
             }
             .padding()
         }
@@ -136,36 +112,13 @@ struct DocumentDetailView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .overlay(alignment: .center) {
-            if consentManager.isShowingConsentDialog {
-                ZStack {
-                    Color.black.opacity(0.3)
-                        .ignoresSafeArea()
-                    
-                    TTSConsentDialog()
-                }
-            }
-        }
         .onAppear {
-            checkAndStartDownload()
-            // Check sync availability for play button state and sync status UI
-            Task {
-                AppLogger.shared.info("📱 UI: Checking sync availability for document: \(document.title)", category: .system)
-                isSyncAvailable = await speechService.isAudioAvailableInSync(for: document.plainText)
-                AppLogger.shared.info("📱 UI: Sync availability result: \(isSyncAvailable)", category: .system)
-            }
-            // Check and update sync availability in download manager
-            downloadManager.checkSyncAvailability(for: document.id.uuidString, text: document.plainText)
-            
-            // Also refresh sync state in case files were synced while app was inactive
-            downloadManager.refreshAllSyncStates()
+            documentStateManager.configure(with: modelContext)
         }
         .sheet(isPresented: $showingEditor) {
             NavigationStack {
                 DocumentEditorView(document: document, onSave: { updatedDocument in
                     document = updatedDocument
-                    // Re-download audio after editing - ask for consent
-                    requestTTSConsent()
                 })
             }
         }
@@ -179,28 +132,13 @@ struct DocumentDetailView: View {
         }
     }
     
-    private var currentDownloadState: DownloadManagerBackend.DownloadState? {
-        downloadManager.getDownloadState(for: document.id.uuidString)
-    }
-    
-    private var currentSyncState: DownloadManagerBackend.SyncState? {
-        return downloadManager.getSyncState(for: document.id.uuidString)
-    }
+    // MARK: - Helper Methods and Properties
     
     private var canPlay: Bool {
         guard !document.markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return false
         }
-        
-        if let downloadState = currentDownloadState {
-            if case .completed = downloadState {
-                return true
-            }
-            return false
-        }
-        
-        // If no active download, check if audio is cached locally or available in sync
-        return downloadManager.isAudioCached(for: document.id.uuidString, text: document.plainText) || isSyncAvailable
+        return speechService.isAudioCached(for: document.plainText)
     }
     
     private var playButtonText: String {
@@ -228,123 +166,25 @@ struct DocumentDetailView: View {
         )
     }
     
-    private func checkAndStartDownload() {
-        guard !document.markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return // Empty documents don't need audio
-        }
-        
-        // Check if audio is already cached locally
-        if downloadManager.isAudioCached(for: document.id.uuidString, text: document.plainText) {
-            return // Already have audio
-        }
-        
-        if currentDownloadState != nil {
-            return // Already downloading or queued
-        }
-        
-        // Check if audio is available in sync before generating new TTS
+    private func downloadAndPlay() {
         Task {
-            let isAvailableInSync = await speechService.isAudioAvailableInSync(for: document.plainText)
-            AppLogger.shared.info("Audio availability check - isAvailableInSync: \(isAvailableInSync) for document: \(document.title)", category: .system)
-            
-            if !isAvailableInSync {
-                // Audio is not available anywhere, request consent for TTS generation
-                AppLogger.shared.info("Requesting TTS consent for document: \(document.title)", category: .speech)
+            if let localURL = await documentStateManager.downloadGeneratedFile(for: document) {
+                // File downloaded successfully, now start playback
                 await MainActor.run {
-                    requestTTSConsent()
+                    startPlayback()
                 }
-            } else {
-                AppLogger.shared.info("Audio is available in sync, skipping TTS generation for document: \(document.title)", category: .system)
             }
         }
     }
     
-    private func requestTTSConsent() {
-        AppLogger.shared.info("Calling consentManager.requestTTSGeneration for: \(document.title)", category: .speech)
-        consentManager.requestTTSGeneration(
-            text: document.plainText,
-            title: document.title.isEmpty ? "Untitled" : document.title,
-            onApprove: {
-                AppLogger.shared.info("User approved TTS generation for: \(self.document.title)", category: .speech)
-                self.startDownload()
-            },
-            onDecline: {
-                // User declined, don't start download
-                AppLogger.shared.info("User declined TTS generation for document: \(self.document.title)", category: .speech)
-            }
-        )
-    }
-    
-    private func startDownload() {
-        downloadManager.startDownload(
-            for: document.id.uuidString,
-            title: document.title.isEmpty ? "Untitled" : document.title,
-            text: document.plainText
-        )
-    }
-    
     @ViewBuilder
-    private func downloadStatusView(
-        icon: String,
-        color: Color,
-        title: String,
-        subtitle: String,
-        progress: Double? = nil,
-        showRetry: Bool = false,
-        showCancel: Bool = false
-    ) -> some View {
-        VStack(spacing: 8) {
+    private func generationStatusView() -> some View {
+        switch document.currentGenerationState {
+        case .draft:
             HStack {
-                Image(systemName: icon)
-                    .foregroundStyle(color)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title)
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                
-                HStack(spacing: 8) {
-                    if showRetry {
-                        Button("Retry") {
-                            startDownload()
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-                    
-                    if showCancel {
-                        Button("Cancel") {
-                            downloadManager.cancelDownload(for: document.id.uuidString)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .foregroundStyle(.red)
-                    }
-                }
-            }
-            
-            if let progress = progress {
-                ProgressView(value: progress)
-                    .progressViewStyle(.linear)
-            }
-        }
-        .padding()
-        .background(Color.primary.colorInvert().opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-    
-    @ViewBuilder
-    private func syncStatusView(syncState: DownloadManagerBackend.SyncState?) -> some View {
-        switch syncState {
-        case .some(.notSynced):
-            HStack {
-                Image(systemName: "server.rack")
+                Image(systemName: "doc")
                     .foregroundStyle(.secondary)
-                Text("Not synced to backend")
+                Text("Draft - Save to generate audio")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -354,12 +194,26 @@ struct DocumentDetailView: View {
             .background(Color.secondary.opacity(0.1))
             .clipShape(RoundedRectangle(cornerRadius: 6))
             
-        case .some(.syncing):
+        case .submitted:
             HStack {
-                Image(systemName: "arrow.up.to.line.compact")
+                Image(systemName: "clock")
+                    .foregroundStyle(.orange)
+                Text("Submitted for generation")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                Spacer()
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            .background(Color.orange.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            
+        case .generating:
+            HStack {
+                Image(systemName: "gear")
                     .foregroundStyle(.blue)
-                    .symbolEffect(.pulse)
-                Text("Syncing to backend...")
+                    .symbolEffect(.rotate)
+                Text("Generating audio...")
                     .font(.caption)
                     .foregroundStyle(.blue)
                 Spacer()
@@ -369,11 +223,11 @@ struct DocumentDetailView: View {
             .background(Color.blue.opacity(0.1))
             .clipShape(RoundedRectangle(cornerRadius: 6))
             
-        case .some(.synced):
+        case .ready:
             HStack {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
-                Text("Synced to backend")
+                Text("Audio ready for download")
                     .font(.caption)
                     .foregroundStyle(.green)
                 Spacer()
@@ -383,32 +237,35 @@ struct DocumentDetailView: View {
             .background(Color.green.opacity(0.1))
             .clipShape(RoundedRectangle(cornerRadius: 6))
             
-        // Backend service handles sync automatically, no need for unavailable state
-            
-        case .some(.syncFailed(let error)):
+        case .failed:
             HStack {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Sync failed")
+                    Text("Generation failed")
                         .font(.caption)
                         .fontWeight(.medium)
                         .foregroundStyle(.red)
-                    Text(error.localizedDescription)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                    if let errorMessage = document.errorMessage {
+                        Text(errorMessage)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
                 }
                 Spacer()
+                Button("Retry") {
+                    Task {
+                        await documentStateManager.submitDocumentForGeneration(document)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
             .background(Color.red.opacity(0.1))
             .clipShape(RoundedRectangle(cornerRadius: 6))
-        
-        case .none:
-            // No sync state available
-            EmptyView()
         }
     }
 }

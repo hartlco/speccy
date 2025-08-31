@@ -4,7 +4,7 @@ import SwiftUI
 struct DocumentEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
-    @ObservedObject private var downloadManager = DownloadManagerBackend.shared
+    @ObservedObject private var documentStateManager = DocumentStateManager.shared
 
     @State var document: SpeechDocument
     var isNew: Bool = false
@@ -31,6 +31,7 @@ struct DocumentEditorView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Save") { save() }
                     .bold()
+                    .disabled(!document.isEditable && !isNew)
             }
             #else
             ToolbarItem(placement: .automatic) {
@@ -39,6 +40,7 @@ struct DocumentEditorView: View {
             ToolbarItem(placement: .automatic) {
                 Button("Save") { save() }
                     .bold()
+                    .disabled(!document.isEditable && !isNew)
             }
             #endif
         }
@@ -47,6 +49,7 @@ struct DocumentEditorView: View {
             markdown = document.markdown
             originalContent = document.plainText
         }
+        .disabled(!document.isEditable && !isNew)
     }
 
     private func cancel() {
@@ -58,20 +61,20 @@ struct DocumentEditorView: View {
         document.title = trimmedTitle.isEmpty ? "Untitled" : trimmedTitle
         document.markdown = markdown
         document.updatedAt = .now
+        
         if isNew {
             modelContext.insert(document)
         }
+        
         do {
             try modelContext.save()
             
-            // Check if content changed and start download if needed
+            // Submit document to backend for TTS generation if content changed
             let newContent = document.plainText
             if newContent != originalContent && !newContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                downloadManager.startDownload(
-                    for: document.id.uuidString,
-                    title: document.title.isEmpty ? "Untitled" : document.title,
-                    text: newContent
-                )
+                Task {
+                    await documentStateManager.submitDocumentForGeneration(document)
+                }
             }
             
             onSave?(document)

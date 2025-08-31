@@ -40,6 +40,7 @@ struct speccyApp: App {
                 .onAppear {
                     // Configure services once the container is ready
                     SpeechServiceBackend.shared.configure(with: sharedModelContainer.mainContext)
+                    DocumentStateManager.shared.configure(with: sharedModelContainer.mainContext)
                 }
         }
         .modelContainer(sharedModelContainer)

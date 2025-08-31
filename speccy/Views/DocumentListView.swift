@@ -4,7 +4,7 @@ import SwiftUI
 struct DocumentListView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \SpeechDocument.updatedAt, order: .reverse) private var documents: [SpeechDocument]
-    @ObservedObject private var downloadManager = DownloadManagerBackend.shared
+    @ObservedObject private var documentStateManager = DocumentStateManager.shared
 
     @State private var showingNew = false
     @State private var showingSettings = false
@@ -15,15 +15,33 @@ struct DocumentListView: View {
             List {
                 ForEach(documents) { doc in
                     NavigationLink(value: doc) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(doc.title).font(.headline)
-                            Text(doc.markdown)
-                                .lineLimit(2)
-                                .foregroundStyle(.secondary)
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(doc.title).font(.headline)
+                                Text(doc.markdown)
+                                    .lineLimit(2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 4) {
+                                statusIndicator(for: doc)
+                                if doc.canDownload {
+                                    Button(action: {
+                                        downloadDocument(doc)
+                                    }) {
+                                        Image(systemName: "arrow.down.circle")
+                                            .foregroundStyle(.blue)
+                                    }
+                                }
+                            }
                         }
                     }
+                    .opacity(doc.currentGenerationState == .generating ? 0.6 : 1.0)
                 }
                 .onDelete(perform: delete)
+            }
+            .refreshable {
+                await documentStateManager.refreshDocumentStates()
             }
             .navigationTitle("Documents")
             .toolbar {
@@ -36,7 +54,7 @@ struct DocumentListView: View {
                         Button(action: { showingDownloads = true }) { 
                             ZStack {
                                 Image(systemName: "arrow.down.circle")
-                                if downloadManager.hasActiveDownloads {
+                                if hasActiveGenerations {
                                     Circle()
                                         .fill(.red)
                                         .frame(width: 8, height: 8)
@@ -57,7 +75,7 @@ struct DocumentListView: View {
                     Button(action: { showingDownloads = true }) { 
                         ZStack {
                             Image(systemName: "arrow.down.circle")
-                            if downloadManager.hasActiveDownloads {
+                            if hasActiveGenerations {
                                 Circle()
                                     .fill(.red)
                                     .frame(width: 8, height: 8)
@@ -78,11 +96,7 @@ struct DocumentListView: View {
                 NavigationStack {
                     DocumentEditorView(
                         document: SpeechDocument(title: "", markdown: ""), 
-                        isNew: true,
-                        onSave: { _ in
-                            // After creating a new document, the navigation will show it in detail view
-                            // which will automatically trigger the download
-                        }
+                        isNew: true
                     )
                 }
                 .presentationDetents([.medium, .large])
@@ -93,6 +107,53 @@ struct DocumentListView: View {
             }
             .sheet(isPresented: $showingDownloads) {
                 DownloadsView()
+            }
+        }
+        .onAppear {
+            documentStateManager.configure(with: modelContext)
+        }
+    }
+    
+    // MARK: - Helper Methods and Properties
+    
+    private var hasActiveGenerations: Bool {
+        documents.contains { doc in
+            doc.currentGenerationState == .submitted || doc.currentGenerationState == .generating
+        }
+    }
+    
+    @ViewBuilder
+    private func statusIndicator(for document: SpeechDocument) -> some View {
+        switch document.currentGenerationState {
+        case .draft:
+            Label("Draft", systemImage: "doc")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .submitted:
+            Label("Submitted", systemImage: "clock")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        case .generating:
+            Label("Generating", systemImage: "gear")
+                .font(.caption)
+                .foregroundStyle(.blue)
+                .symbolEffect(.rotate)
+        case .ready:
+            Label("Ready", systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+        case .failed:
+            Label("Failed", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.red)
+        }
+    }
+    
+    private func downloadDocument(_ document: SpeechDocument) {
+        Task {
+            if let localURL = await documentStateManager.downloadGeneratedFile(for: document) {
+                // File downloaded successfully - could trigger playback or show notification
+                AppLogger.shared.info("Downloaded file for \(document.title)", category: .system)
             }
         }
     }
