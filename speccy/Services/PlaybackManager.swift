@@ -24,6 +24,10 @@ class PlaybackManager: ObservableObject {
     private var speechService: SpeechServiceBackend?
     private var progressCancellable: AnyCancellable?
     private var speedChangeCancellable: AnyCancellable?
+    private let backendService = TTSBackendService.shared
+    
+    private var lastSyncedProgress: Double = 0.0
+    private let syncThreshold: Double = 0.05 // Only sync if progress changed by 5%
     
     private init() {
         // Observe playback speed changes and update active speech service
@@ -63,6 +67,11 @@ class PlaybackManager: ObservableObject {
         
         currentTitle = title.isEmpty ? "Untitled" : title
         self.speechService = speechService
+        
+        // Try to restore playback state from backend
+        Task { @MainActor in
+            await restorePlaybackStateFromBackend()
+        }
         
         // Start monitoring speech service state
         startMonitoring()
@@ -178,6 +187,77 @@ class PlaybackManager: ObservableObject {
             isPaused = true
             isLoading = false
             progress = pausedProgress
+        }
+        
+        // Sync to backend if progress changed significantly or state changed
+        if shouldSyncToBackend() {
+            Task { @MainActor in
+                await syncPlaybackStateToBackend()
+            }
+        }
+    }
+    
+    private func shouldSyncToBackend() -> Bool {
+        // Always sync on state changes (play/pause/loading)
+        if isPlaying || isPaused || isLoading {
+            // For progress changes, only sync if it changed significantly
+            let progressDiff = abs(progress - lastSyncedProgress)
+            return progressDiff >= syncThreshold || lastSyncedProgress == 0.0
+        }
+        return true
+    }
+    
+    private func syncPlaybackStateToBackend() async {
+        guard let session = currentSession,
+              backendService.isAuthenticated else { return }
+        
+        do {
+            _ = try await backendService.syncPlaybackState(
+                documentId: session.documentId,
+                title: session.title,
+                textContent: session.text,
+                languageCode: session.languageCode,
+                resumeKey: session.resumeKey,
+                progress: progress,
+                isPlaying: isPlaying,
+                isPaused: isPaused,
+                isLoading: isLoading,
+                currentTitle: currentTitle
+            )
+            lastSyncedProgress = progress
+            AppLogger.shared.info("Synced playback state to backend for '\(session.title)'", category: .playback)
+        } catch {
+            AppLogger.shared.error("Failed to sync playback state to backend: \(error)", category: .playback)
+        }
+    }
+    
+    private func restorePlaybackStateFromBackend() async {
+        guard let session = currentSession,
+              backendService.isAuthenticated else { return }
+        
+        do {
+            if let backendState = try await backendService.getPlaybackState(documentId: session.documentId) {
+                // Only restore progress if it's significant
+                if backendState.progress > 0.1 && backendState.progress != progress {
+                    AppLogger.shared.info("Restoring playback state from backend: progress=\(backendState.progress)", category: .playback)
+                    
+                    // Update our local state to match backend
+                    progress = backendState.progress
+                    lastSyncedProgress = backendState.progress
+                    
+                    // If the speech service is ready, seek to the restored position
+                    if let speechService = speechService {
+                        speechService.seek(
+                            toFraction: backendState.progress,
+                            fullText: session.text,
+                            languageCode: session.languageCode,
+                            rate: UserPreferences.shared.playbackSpeed
+                        )
+                    }
+                }
+            }
+        } catch {
+            AppLogger.shared.error("Failed to restore playback state from backend: \(error)", category: .playback)
         }
     }
     

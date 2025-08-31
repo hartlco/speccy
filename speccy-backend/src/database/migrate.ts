@@ -32,6 +32,31 @@ const migrations = [
     CREATE INDEX IF NOT EXISTS idx_audio_files_status ON audio_files(status);
     CREATE INDEX IF NOT EXISTS idx_users_token_hash ON users(openai_token_hash);
   `,
+  // Migration 2: Add playback states table
+  `
+    CREATE TABLE IF NOT EXISTS playback_states (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      text_content TEXT NOT NULL,
+      language_code TEXT,
+      resume_key TEXT NOT NULL,
+      progress REAL NOT NULL DEFAULT 0.0,
+      is_playing BOOLEAN NOT NULL DEFAULT 0,
+      is_paused BOOLEAN NOT NULL DEFAULT 0,
+      is_loading BOOLEAN NOT NULL DEFAULT 0,
+      current_title TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      UNIQUE(user_id, document_id) ON CONFLICT REPLACE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_playback_states_user_id ON playback_states(user_id);
+    CREATE INDEX IF NOT EXISTS idx_playback_states_document_id ON playback_states(document_id);
+    CREATE INDEX IF NOT EXISTS idx_playback_states_updated_at ON playback_states(updated_at);
+  `,
 ];
 
 export function runMigrations() {

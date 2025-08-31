@@ -12,6 +12,7 @@ final class DocumentStateManager: ObservableObject {
     private let backendService = TTSBackendService.shared
     private var pollingTimer: Timer?
     private var modelContext: ModelContext?
+    private var lastDeletedFilesCheck: String?
     
     private init() {}
     
@@ -35,7 +36,7 @@ final class DocumentStateManager: ObservableObject {
         saveContext()
         
         do {
-            let authResponse = try await backendService.authenticate(openAIToken: config.apiKey)
+            _ = try await backendService.authenticate(openAIToken: config.apiKey)
             AppLogger.shared.info("Authenticated with backend for document submission: \(document.title)", category: .system)
             
             AppLogger.shared.info("Submitting TTS generation request for: \(document.title), text length: \(document.plainText.count)", category: .system)
@@ -134,6 +135,9 @@ final class DocumentStateManager: ObservableObject {
                 await checkDocumentStatus(document)
             }
             
+            // Check for deleted files from backend
+            await checkForDeletedFiles(allDocuments: allDocuments)
+            
         } catch {
             AppLogger.shared.error("Failed to fetch pending documents: \(error)", category: .system)
         }
@@ -175,6 +179,47 @@ final class DocumentStateManager: ObservableObject {
             
         } catch {
             AppLogger.shared.error("Failed to check document status: \(error)", category: .system)
+        }
+    }
+    
+    private func checkForDeletedFiles(allDocuments: [SpeechDocument]) async {
+        // Only check if we're authenticated
+        guard backendService.isAuthenticated else { return }
+        
+        do {
+            let deletedFilesResponse = try await backendService.getDeletedFiles(since: lastDeletedFilesCheck)
+            let deletedFileIds = deletedFilesResponse.deleted_files
+            
+            if !deletedFileIds.isEmpty {
+                AppLogger.shared.info("Found \(deletedFileIds.count) deleted files from backend", category: .system)
+                
+                // Find documents with deleted backend files and mark them for regeneration
+                for document in allDocuments {
+                    if let backendFileId = document.backendFileId,
+                       deletedFileIds.contains(backendFileId) {
+                        AppLogger.shared.info("File deleted on backend for document: \(document.title)", category: .system)
+                        
+                        // Reset the document generation state
+                        document.generationState = .draft
+                        document.backendFileId = nil
+                        document.errorMessage = "File was deleted from backend"
+                        
+                        // Stop playback if this document is currently playing
+                        let playbackManager = PlaybackManager.shared
+                        if playbackManager.isCurrentSession(documentId: document.id.uuidString) {
+                            playbackManager.stopPlayback()
+                        }
+                    }
+                }
+                
+                saveContext()
+            }
+            
+            // Update the last check timestamp
+            lastDeletedFilesCheck = ISO8601DateFormatter().string(from: Date())
+            
+        } catch {
+            AppLogger.shared.error("Failed to check for deleted files: \(error)", category: .system)
         }
     }
     

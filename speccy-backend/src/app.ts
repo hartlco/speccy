@@ -5,6 +5,7 @@ import { authMiddleware } from './middleware/auth.middleware';
 import { authRoutes } from './routes/auth';
 import { ttsRoutes } from './routes/tts';
 import { fileRoutes } from './routes/files';
+import { playbackRoutes } from './routes/playback';
 import { CleanupService } from './services/cleanup.service';
 
 // Add auth middleware to Fastify instance type
@@ -50,6 +51,7 @@ export function createApp() {
   fastify.register(authRoutes, { prefix: '/auth' });
   fastify.register(ttsRoutes, { prefix: '/tts' });
   fastify.register(fileRoutes, { prefix: '/files' });
+  fastify.register(playbackRoutes, { prefix: '/playback' });
 
   // Start cleanup service
   CleanupService.startPeriodicCleanup();

@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var model: String = UserDefaults.standard.string(forKey: "OPENAI_TTS_MODEL") ?? "gpt-4o-mini-tts"
     @State private var voice: String = UserDefaults.standard.string(forKey: "OPENAI_TTS_VOICE") ?? "alloy"
     @State private var format: String = UserDefaults.standard.string(forKey: "OPENAI_TTS_FORMAT") ?? "mp3"
+    @State private var backendURL: String = UserDefaults.standard.string(forKey: "BACKEND_BASE_URL") ?? ""
     @State private var showingLogs = false
     var body: some View {
         Form {
@@ -26,6 +27,14 @@ struct SettingsView: View {
                     Text("wav").tag("wav")
                 }
                 .pickerStyle(.segmented)
+            }
+            
+            Section(header: Text("Backend Server"), footer: Text("Leave empty to use default server. Format: http://localhost:3000")) {
+                TextField("Backend URL", text: $backendURL)
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                    #endif
             }
             
             Section("Playback") {
@@ -104,6 +113,7 @@ struct SettingsView: View {
         UserDefaults.standard.set(model.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "OPENAI_TTS_MODEL")
         UserDefaults.standard.set(voice.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "OPENAI_TTS_VOICE")
         UserDefaults.standard.set(format, forKey: "OPENAI_TTS_FORMAT")
+        UserDefaults.standard.set(backendURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "BACKEND_BASE_URL")
         dismiss()
     }
 }
