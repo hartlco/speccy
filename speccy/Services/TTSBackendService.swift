@@ -72,6 +72,22 @@ struct DeletedFilesResponse: Codable {
     let deleted_files: [String]
 }
 
+struct TTSFileInfo: Codable {
+    let id: String
+    let content_hash: String
+    let text_content: String
+    let voice: String
+    let model: String
+    let format: String
+    let speed: Double
+    let file_name: String?
+    let file_size: Double?
+    let status: String
+    let created_at: String
+    let expires_at: String
+    let url: String?
+}
+
 @MainActor
 class TTSBackendService: NSObject, ObservableObject {
     static let shared = TTSBackendService()
@@ -410,6 +426,64 @@ class TTSBackendService: NSObject, ObservableObject {
             return deletedFilesResponse
         } else {
             throw TTSBackendError.syncFailed("Failed to get deleted files")
+        }
+    }
+    
+    // MARK: - File Sync
+    
+    func getAllFiles() async throws -> [TTSFileInfo] {
+        guard let url = URL(string: "\(baseURL)/tts/files") else {
+            throw TTSBackendError.invalidURL
+        }
+        
+        guard let token = sessionToken else {
+            throw TTSBackendError.notAuthenticated
+        }
+        
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "GET"
+        urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        urlRequest.timeoutInterval = 30.0
+        
+        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw TTSBackendError.invalidResponse
+        }
+        
+        if httpResponse.statusCode == 200 {
+            let files = try JSONDecoder().decode([TTSFileInfo].self, from: data)
+            return files
+        } else {
+            throw TTSBackendError.syncFailed("Failed to get all files")
+        }
+    }
+    
+    func getFilesSince(timestamp: String) async throws -> [TTSFileInfo] {
+        guard let url = URL(string: "\(baseURL)/tts/files/since/\(timestamp)") else {
+            throw TTSBackendError.invalidURL
+        }
+        
+        guard let token = sessionToken else {
+            throw TTSBackendError.notAuthenticated
+        }
+        
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "GET"
+        urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        urlRequest.timeoutInterval = 30.0
+        
+        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw TTSBackendError.invalidResponse
+        }
+        
+        if httpResponse.statusCode == 200 {
+            let files = try JSONDecoder().decode([TTSFileInfo].self, from: data)
+            return files
+        } else {
+            throw TTSBackendError.syncFailed("Failed to get files since timestamp")
         }
     }
 }

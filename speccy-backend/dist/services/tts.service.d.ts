@@ -2,21 +2,17 @@ import { TTSRequest, AudioFile } from '../types';
 export declare class TTSService {
     private static ensureStorageDir;
     /**
-     * Generate TTS audio file
-     */
-    static generateTTS(userId: string, request: TTSRequest): Promise<AudioFile>;
-    /**
-     * Perform actual TTS generation (runs in background)
-     */
-    private static performTTSGeneration;
-    /**
-     * Alternative: Generate TTS with token provided in request
+     * Generate TTS with token provided in request (ASYNC - returns immediately)
      */
     static generateTTSWithToken(userId: string, openaiToken: string, request: TTSRequest): Promise<AudioFile>;
     /**
      * Perform TTS generation with provided OpenAI token
      */
     private static performTTSGenerationWithToken;
+    /**
+     * Split text into chunks for OpenAI TTS processing
+     */
+    private static chunkText;
     /**
      * Get file status by content hash
      */

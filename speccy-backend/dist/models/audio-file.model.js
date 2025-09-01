@@ -38,6 +38,11 @@ class AudioFileModel {
     SELECT * FROM audio_files WHERE user_id = ? AND status != 'expired'
     ORDER BY created_at DESC
   `);
+    static findByUserIdSinceStmt = connection_1.default.prepare(`
+    SELECT * FROM audio_files 
+    WHERE user_id = ? AND created_at > ? AND status != 'expired'
+    ORDER BY created_at DESC
+  `);
     static countByUserAndDateStmt = connection_1.default.prepare(`
     SELECT COUNT(*) as count FROM audio_files 
     WHERE user_id = ? AND date(created_at) = date('now')
@@ -85,6 +90,9 @@ class AudioFileModel {
     }
     static async findByUserId(userId) {
         return this.findByUserIdStmt.all(userId);
+    }
+    static async findByUserIdSince(userId, timestamp) {
+        return this.findByUserIdSinceStmt.all(userId, timestamp);
     }
     static async findStuckGenerations() {
         return this.findStuckGenerationsStmt.all();

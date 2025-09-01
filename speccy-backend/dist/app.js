@@ -11,6 +11,7 @@ const auth_middleware_1 = require("./middleware/auth.middleware");
 const auth_1 = require("./routes/auth");
 const tts_1 = require("./routes/tts");
 const files_1 = require("./routes/files");
+const playback_1 = require("./routes/playback");
 const cleanup_service_1 = require("./services/cleanup.service");
 function createApp() {
     const fastify = (0, fastify_1.default)({
@@ -43,6 +44,7 @@ function createApp() {
     fastify.register(auth_1.authRoutes, { prefix: '/auth' });
     fastify.register(tts_1.ttsRoutes, { prefix: '/tts' });
     fastify.register(files_1.fileRoutes, { prefix: '/files' });
+    fastify.register(playback_1.playbackRoutes, { prefix: '/playback' });
     // Start cleanup service
     cleanup_service_1.CleanupService.startPeriodicCleanup();
     // Graceful shutdown

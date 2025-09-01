@@ -8,6 +8,7 @@ export declare class AudioFileModel {
     private static findExpiredFilesStmt;
     private static markExpiredStmt;
     private static findByUserIdStmt;
+    private static findByUserIdSinceStmt;
     private static countByUserAndDateStmt;
     private static getUserStorageUsageStmt;
     private static findStuckGenerationsStmt;
@@ -20,6 +21,7 @@ export declare class AudioFileModel {
     static findExpiredFiles(): Promise<AudioFile[]>;
     static markExpiredFiles(): Promise<number>;
     static findByUserId(userId: string): Promise<AudioFile[]>;
+    static findByUserIdSince(userId: string, timestamp: string): Promise<AudioFile[]>;
     static findStuckGenerations(): Promise<AudioFile[]>;
     static getUserStats(userId: string): Promise<{
         filesCount: number;

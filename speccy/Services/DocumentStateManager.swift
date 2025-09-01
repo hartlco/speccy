@@ -13,12 +13,46 @@ final class DocumentStateManager: ObservableObject {
     private var pollingTimer: Timer?
     private var modelContext: ModelContext?
     private var lastDeletedFilesCheck: String?
+    private var lastSyncTimestamp: String?
+    private var hasPerformedInitialSync: Bool = false
     
     private init() {}
     
     func configure(with modelContext: ModelContext) {
         self.modelContext = modelContext
         startPolling()
+    }
+    
+    func performInitialSync() async {
+        await syncAllFiles()
+    }
+    
+    func performInitialAuthenticationAndSync() async {
+        // Try to authenticate with stored API key and sync
+        guard let config = loadOpenAIConfig() else {
+            AppLogger.shared.info("No OpenAI API key configured, skipping initial sync", category: .system)
+            return
+        }
+        
+        AppLogger.shared.info("Attempting initial authentication and sync on app startup", category: .system)
+        
+        do {
+            _ = try await backendService.authenticate(openAIToken: config.apiKey)
+            AppLogger.shared.info("Successfully authenticated on app startup", category: .system)
+            
+            // Small delay to ensure authentication is fully complete
+            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms delay
+            await performInitialSyncIfNeeded()
+        } catch {
+            AppLogger.shared.info("Initial authentication failed (this is normal if no backend is running): \(error)", category: .system)
+        }
+    }
+    
+    private func performInitialSyncIfNeeded() async {
+        guard !hasPerformedInitialSync else { return }
+        hasPerformedInitialSync = true
+        AppLogger.shared.info("Performing initial sync after authentication", category: .system)
+        await syncAllFiles()
     }
     
     // MARK: - Document Submission
@@ -38,6 +72,10 @@ final class DocumentStateManager: ObservableObject {
         do {
             _ = try await backendService.authenticate(openAIToken: config.apiKey)
             AppLogger.shared.info("Authenticated with backend for document submission: \(document.title)", category: .system)
+            
+            // Trigger initial sync after authentication (with a small delay to ensure auth is fully complete)
+            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms delay
+            await performInitialSyncIfNeeded()
             
             AppLogger.shared.info("Submitting TTS generation request for: \(document.title), text length: \(document.plainText.count)", category: .system)
             let ttsResponse = try await backendService.generateTTS(
@@ -137,6 +175,9 @@ final class DocumentStateManager: ObservableObject {
             
             // Check for deleted files from backend
             await checkForDeletedFiles(allDocuments: allDocuments)
+            
+            // Check for new files from other devices
+            await syncNewFiles()
             
         } catch {
             AppLogger.shared.error("Failed to fetch pending documents: \(error)", category: .system)
@@ -239,6 +280,147 @@ final class DocumentStateManager: ObservableObject {
             AppLogger.shared.error("Failed to download generated file: \(error)", category: .system)
             return nil
         }
+    }
+    
+    // MARK: - File Sync
+    
+    private func syncAllFiles() async {
+        // Only sync if we're authenticated
+        guard backendService.isAuthenticated else { 
+            AppLogger.shared.warning("Skipping sync - not authenticated", category: .system)
+            return 
+        }
+        guard let modelContext = modelContext else { 
+            AppLogger.shared.warning("Skipping sync - no model context", category: .system)
+            return 
+        }
+        
+        AppLogger.shared.info("Starting syncAllFiles", category: .system)
+        
+        do {
+            let allFiles = try await backendService.getAllFiles()
+            AppLogger.shared.info("Successfully fetched \(allFiles.count) files from backend", category: .system)
+            
+            if !allFiles.isEmpty {
+                AppLogger.shared.info("Found \(allFiles.count) total files from backend", category: .system)
+                
+                // Process all files - only create documents for "ready" files
+                let readyFiles = allFiles.filter { $0.status == "ready" }
+                
+                for fileInfo in readyFiles {
+                    // Check if we already have a document with this content hash
+                    let existingDocs = try modelContext.fetch(FetchDescriptor<SpeechDocument>())
+                    let existingDoc = existingDocs.first { $0.contentHash == fileInfo.content_hash }
+                    
+                    if existingDoc == nil {
+                        // Create a new document from the backend file
+                        let newDocument = SpeechDocument(
+                            title: generateTitleFromText(fileInfo.text_content),
+                            markdown: fileInfo.text_content,
+                            createdAt: parseBackendTimestamp(fileInfo.created_at) ?? Date(),
+                            updatedAt: parseBackendTimestamp(fileInfo.created_at) ?? Date()
+                        )
+                        
+                        // Set the document as ready with backend file info
+                        newDocument.generationState = .ready
+                        newDocument.backendFileId = fileInfo.id
+                        newDocument.contentHash = fileInfo.content_hash
+                        
+                        modelContext.insert(newDocument)
+                        AppLogger.shared.info("Created new document from backend: \(newDocument.title)", category: .system)
+                    } else {
+                        // Update existing document if it doesn't have backend info
+                        if existingDoc?.backendFileId == nil {
+                            existingDoc?.backendFileId = fileInfo.id
+                            existingDoc?.generationState = .ready
+                            AppLogger.shared.info("Updated existing document with backend info: \(existingDoc?.title ?? "")", category: .system)
+                        }
+                    }
+                }
+                
+                // Save the new/updated documents
+                saveContext()
+            }
+            
+        } catch {
+            AppLogger.shared.error("Failed to sync all files: \(error)", category: .system)
+        }
+    }
+    
+    private func syncNewFiles() async {
+        // Only sync if we're authenticated
+        guard backendService.isAuthenticated else { return }
+        guard let modelContext = modelContext else { return }
+        
+        // Use last sync timestamp or default to 24 hours ago for initial sync
+        let syncTimestamp = lastSyncTimestamp ?? ISO8601DateFormatter().string(from: Date().addingTimeInterval(-86400))
+        
+        do {
+            let newFiles = try await backendService.getFilesSince(timestamp: syncTimestamp)
+            
+            if !newFiles.isEmpty {
+                AppLogger.shared.info("Found \(newFiles.count) new files from backend since \(syncTimestamp)", category: .system)
+                
+                // Process new files - only create documents for "ready" files
+                let readyFiles = newFiles.filter { $0.status == "ready" }
+                
+                for fileInfo in readyFiles {
+                    // Check if we already have a document with this content hash
+                    let existingDocs = try modelContext.fetch(FetchDescriptor<SpeechDocument>())
+                    let existingDoc = existingDocs.first { $0.contentHash == fileInfo.content_hash }
+                    
+                    if existingDoc == nil {
+                        // Create a new document from the backend file
+                        let newDocument = SpeechDocument(
+                            title: generateTitleFromText(fileInfo.text_content),
+                            markdown: fileInfo.text_content,
+                            createdAt: parseBackendTimestamp(fileInfo.created_at) ?? Date(),
+                            updatedAt: parseBackendTimestamp(fileInfo.created_at) ?? Date()
+                        )
+                        
+                        // Set the document as ready with backend file info
+                        newDocument.generationState = .ready
+                        newDocument.backendFileId = fileInfo.id
+                        newDocument.contentHash = fileInfo.content_hash
+                        
+                        modelContext.insert(newDocument)
+                        AppLogger.shared.info("Created new document from backend: \(newDocument.title)", category: .system)
+                    }
+                }
+                
+                // Save the new documents
+                saveContext()
+            }
+            
+            // Update the last sync timestamp to now
+            lastSyncTimestamp = ISO8601DateFormatter().string(from: Date())
+            
+        } catch {
+            AppLogger.shared.error("Failed to sync new files: \(error)", category: .system)
+        }
+    }
+    
+    private func generateTitleFromText(_ text: String) -> String {
+        // Generate a title from the first line or first few words
+        let lines = text.components(separatedBy: .newlines)
+        let firstLine = lines.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        
+        if !firstLine.isEmpty {
+            // Take first line, limit to 50 characters
+            return String(firstLine.prefix(50))
+        } else {
+            // Fallback: take first few words
+            let words = text.components(separatedBy: .whitespacesAndNewlines)
+                .filter { !$0.isEmpty }
+                .prefix(5)
+            return words.joined(separator: " ")
+        }
+    }
+    
+    private func parseBackendTimestamp(_ timestamp: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: timestamp)
     }
     
     // MARK: - Manual Refresh

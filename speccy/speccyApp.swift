@@ -41,6 +41,11 @@ struct speccyApp: App {
                     // Configure services once the container is ready
                     SpeechServiceBackend.shared.configure(with: sharedModelContainer.mainContext)
                     DocumentStateManager.shared.configure(with: sharedModelContainer.mainContext)
+                    
+                    // Try to authenticate and sync on app startup if API key is available
+                    Task {
+                        await DocumentStateManager.shared.performInitialAuthenticationAndSync()
+                    }
                 }
         }
         .modelContainer(sharedModelContainer)

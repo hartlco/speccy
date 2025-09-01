@@ -42,6 +42,12 @@ export class AudioFileModel {
     ORDER BY created_at DESC
   `);
 
+  private static findByUserIdSinceStmt = db.prepare(`
+    SELECT * FROM audio_files 
+    WHERE user_id = ? AND created_at > ? AND status != 'expired'
+    ORDER BY created_at DESC
+  `);
+
   private static countByUserAndDateStmt = db.prepare(`
     SELECT COUNT(*) as count FROM audio_files 
     WHERE user_id = ? AND date(created_at) = date('now')
@@ -113,6 +119,10 @@ export class AudioFileModel {
 
   static async findByUserId(userId: string): Promise<AudioFile[]> {
     return this.findByUserIdStmt.all(userId) as AudioFile[];
+  }
+
+  static async findByUserIdSince(userId: string, timestamp: string): Promise<AudioFile[]> {
+    return this.findByUserIdSinceStmt.all(userId, timestamp) as AudioFile[];
   }
 
   static async findStuckGenerations(): Promise<AudioFile[]> {

@@ -51,4 +51,38 @@ export interface FileStatusResponse {
     error?: string;
     message?: string;
 }
+export interface PlaybackStateRequest {
+    document_id: string;
+    title: string;
+    text_content: string;
+    language_code?: string;
+    resume_key: string;
+    progress: number;
+    is_playing: boolean;
+    is_paused: boolean;
+    is_loading: boolean;
+    current_title: string;
+}
+export interface PlaybackStateResponse {
+    id: string;
+    document_id: string;
+    title: string;
+    text_content: string;
+    language_code?: string;
+    resume_key: string;
+    progress: number;
+    is_playing: boolean;
+    is_paused: boolean;
+    is_loading: boolean;
+    current_title: string;
+    created_at: string;
+    updated_at: string;
+    error?: string;
+    message?: string;
+}
+export interface DeletedFilesResponse {
+    deleted_files: string[];
+    error?: string;
+    message?: string;
+}
 //# sourceMappingURL=types.d.ts.map

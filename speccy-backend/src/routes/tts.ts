@@ -188,4 +188,114 @@ export async function ttsRoutes(fastify: FastifyInstance) {
       });
     }
   });
+
+  // GET /tts/files - List all files for user
+  fastify.get('/files', {
+    preHandler: [fastify.authMiddleware],
+    schema: {
+      response: {
+        200: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              content_hash: { type: 'string' },
+              text_content: { type: 'string' },
+              voice: { type: 'string' },
+              model: { type: 'string' },
+              format: { type: 'string' },
+              speed: { type: 'number' },
+              file_name: { type: 'string' },
+              file_size: { type: 'number' },
+              status: { type: 'string', enum: ['generating', 'ready', 'failed', 'expired'] },
+              created_at: { type: 'string' },
+              expires_at: { type: 'string' },
+              url: { type: 'string' }
+            }
+          }
+        }
+      }
+    }
+  }, async (request, reply) => {
+    try {
+      const user = (request as any).user!;
+      
+      const audioFiles = await AudioFileModel.findByUserId(user.id);
+      
+      // Transform files to include download URLs for ready files
+      const filesWithUrls = audioFiles.map(file => ({
+        ...file,
+        url: file.status === 'ready' ? `/files/${file.id}` : undefined
+      }));
+
+      return reply.code(200).send(filesWithUrls);
+
+    } catch (error: any) {
+      console.error('List files error:', error);
+      return reply.code(500).send({
+        error: 'Internal Server Error',
+        message: 'Failed to list files'
+      });
+    }
+  });
+
+  // GET /tts/files/since/:timestamp - List files created or updated since timestamp
+  fastify.get<{ Params: { timestamp: string } }>('/files/since/:timestamp', {
+    preHandler: [fastify.authMiddleware],
+    schema: {
+      params: {
+        type: 'object',
+        required: ['timestamp'],
+        properties: {
+          timestamp: { type: 'string' }
+        }
+      },
+      response: {
+        200: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              content_hash: { type: 'string' },
+              text_content: { type: 'string' },
+              voice: { type: 'string' },
+              model: { type: 'string' },
+              format: { type: 'string' },
+              speed: { type: 'number' },
+              file_name: { type: 'string' },
+              file_size: { type: 'number' },
+              status: { type: 'string', enum: ['generating', 'ready', 'failed', 'expired'] },
+              created_at: { type: 'string' },
+              expires_at: { type: 'string' },
+              url: { type: 'string' }
+            }
+          }
+        }
+      }
+    }
+  }, async (request, reply) => {
+    try {
+      const user = (request as any).user!;
+      const { timestamp } = request.params;
+      
+      const audioFiles = await AudioFileModel.findByUserIdSince(user.id, timestamp);
+      
+      // Transform files to include download URLs for ready files
+      const filesWithUrls = audioFiles.map(file => ({
+        ...file,
+        url: file.status === 'ready' ? `/files/${file.id}` : undefined
+      }));
+
+      return reply.code(200).send(filesWithUrls);
+
+    } catch (error: any) {
+      console.error('List files since timestamp error:', error);
+      return reply.code(500).send({
+        error: 'Internal Server Error',
+        message: 'Failed to list files since timestamp'
+      });
+    }
+  });
 }

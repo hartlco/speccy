@@ -89,6 +89,10 @@ final class SpeechServiceBackend: NSObject, ObservableObject {
             // Authenticate with backend first
             let authResponse = try await backendService.authenticate(openAIToken: config.apiKey)
             AppLogger.shared.info("Authenticated with backend for user: \(authResponse.user_id ?? "unknown")", category: .system)
+            
+            // Trigger initial sync after authentication (with a small delay to ensure auth is fully complete)
+            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms delay
+            await DocumentStateManager.shared.performInitialSync()
         } catch {
             AppLogger.shared.error("Failed to authenticate with backend: \(error)", category: .system)
             onCompletion(.failure(error))
